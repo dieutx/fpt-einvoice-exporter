@@ -8,6 +8,8 @@ CLI Python để đăng nhập `portal.einvoice.fpt.com.vn`, lấy bearer token 
 - Đọc credential từ `.env`, biến môi trường hoặc tham số CLI.
 - Query hóa đơn theo khoảng ngày và loại hóa đơn.
 - Lưu raw JSON theo từng loại hóa đơn để đối soát/debug.
+- Có thể resume từ raw JSON đã lưu để không tải lại các page đã hoàn tất.
+- Có thể tiếp tục khi một loại hóa đơn lỗi và vẫn xuất workbook cho các loại thành công.
 - Xuất Excel gồm `metadata`, `summary`, `invoices_all` và sheet riêng theo từng loại hóa đơn.
 - Format cột Excel theo thứ tự gần với màn hình export của web app.
 
@@ -27,6 +29,7 @@ CLI Python để đăng nhập `portal.einvoice.fpt.com.vn`, lấy bearer token 
 ├── fpt_einvoice_exporter.py   # Wrapper giữ lệnh cũ: python fpt_einvoice_exporter.py
 ├── tests/                     # Unit tests cho env, schema Excel, package structure
 ├── .env.example               # Mẫu credential local
+├── pyproject.toml             # Metadata package và console script
 ├── requirements.txt           # Runtime dependencies
 └── README.md
 ```
@@ -91,6 +94,17 @@ python -m fpt_einvoice \
   --output-dir ./output/demo
 ```
 
+Sau khi cài package bằng `pip install .`, có thể chạy console script:
+
+```bash
+fpt-einvoice-exporter \
+  --from-date 2026-05-01 \
+  --to-date 2026-05-12 \
+  --types all-known \
+  --profile-dir ./profiles/demo \
+  --output-dir ./output/demo
+```
+
 Override credential tạm bằng env vars:
 
 ```bash
@@ -120,6 +134,8 @@ python fpt_einvoice_exporter.py \
 | `--page-size` | Số bản ghi mỗi request API, mặc định `2000`. |
 | `--max-retries` | Số lần retry cho lỗi API transient `429/5xx`, mặc định `3`. |
 | `--retry-delay` | Số giây chờ giữa các lần retry API, mặc định `2.0`. |
+| `--resume` | Tiếp tục từ raw JSON đã có trong `output/raw`, bỏ qua các page đã lưu. |
+| `--continue-on-error` | Nếu một loại hóa đơn lỗi, vẫn ghi workbook cho các loại thành công và lưu lỗi vào metadata. |
 | `--profile-dir` | Thư mục lưu profile CloakBrowser để tái sử dụng session. |
 | `--output-dir` | Thư mục chứa Excel, metadata và raw JSON. |
 | `--output-name` | Tên file Excel tùy chỉnh. Nếu bỏ qua sẽ tự sinh theo khoảng ngày. |
@@ -157,6 +173,8 @@ Workbook Excel gồm:
 
 Khi chạy thành công, CLI in JSON kết quả ra stdout, gồm đường dẫn file Excel, thư mục output, `metadata.json`, số dòng theo loại và tổng số dòng.
 
+Nếu chạy với `--continue-on-error`, kết quả và `metadata.json` có thêm `errors` theo mã loại hóa đơn. Khi có lỗi bị bỏ qua, trường `ok` là `false` để báo đây là file xuất một phần.
+
 ## Cách hoạt động
 
 Script không bấm nút “Tải về” trên portal. Flow hiện tại:
@@ -165,11 +183,14 @@ Script không bấm nút “Tải về” trên portal. Flow hiện tại:
 2. Nếu profile chưa có session, tự điền MST, tài khoản, mật khẩu và đăng nhập.
 3. Đọc `sessionStorage.session` để lấy bearer token.
 4. Gọi API `/api/sea` theo từng loại hóa đơn và từng page.
-5. Lưu raw JSON, chuẩn hóa dữ liệu và ghi workbook Excel bằng `openpyxl`.
+5. Lưu raw JSON sau mỗi page thành công để có thể resume.
+6. Chuẩn hóa dữ liệu và ghi workbook Excel bằng `openpyxl`.
 
 Cách này ổn định hơn cho batch lớn và dễ mở rộng để chạy cron hoặc pipeline nội bộ.
 
-Mặc định CLI lưu session/token vào `<profile-dir>/fpt_session.json` sau lần đăng nhập thành công. Các lần chạy sau sẽ đọc token cache trước và gọi API luôn, tránh mở lại browser/reCAPTCHA. Nếu token hết hạn hoặc muốn ép đăng nhập lại, chạy với `--no-reuse-token` hoặc xóa file session cache.
+Mặc định CLI lưu session/token vào `<profile-dir>/fpt_session.json` sau lần đăng nhập thành công. Các lần chạy sau sẽ đọc token cache trước và gọi API luôn, tránh mở lại browser/reCAPTCHA. Nếu API trả `401/403` khi dùng token cache, CLI sẽ xóa cache và yêu cầu chạy lại để đăng nhập mới. Nếu muốn ép đăng nhập lại, chạy với `--no-reuse-token` hoặc xóa file session cache.
+
+Khi export lớn bị gián đoạn, chạy lại cùng `--output-dir`, `--types`, khoảng ngày và thêm `--resume`. CLI sẽ đọc các file `output/raw/*.json` đã có, bắt đầu page tiếp theo từ số dòng đã lưu và tiếp tục checkpoint sau mỗi page.
 
 ## Phát triển
 
@@ -184,7 +205,7 @@ Test hiện tập trung vào:
 
 - Đọc `.env` và resolve credential.
 - Thứ tự cột, format giá trị và sort trong workbook Excel.
-- Package structure và wrapper CLI tương thích lệnh cũ.
+- Package structure, console script và wrapper CLI tương thích lệnh cũ.
 
 ## Bảo mật dữ liệu
 

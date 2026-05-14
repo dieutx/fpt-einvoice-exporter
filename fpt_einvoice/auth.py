@@ -48,6 +48,13 @@ def write_session_cache(path: Path, session: dict[str, Any]) -> None:
         pass
 
 
+def delete_session_cache(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def wait_for_session(page: Any, timeout_seconds: int = 35) -> dict[str, Any]:
     end = time.time() + timeout_seconds
     while time.time() < end:

@@ -1,11 +1,29 @@
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .constants import BASE_URL, KNOWN_TYPE_LABELS
 from .log import eprint
+
+
+def _read_raw_rows(path: Path) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Raw JSON không hợp lệ: {path}") from exc
+    if not isinstance(payload, list):
+        raise ValueError(f"Raw JSON phải là list hóa đơn: {path}")
+    return payload
+
+
+def _write_raw_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def resolve_types(requested: str, session: dict[str, Any]) -> list[str]:
@@ -29,10 +47,14 @@ def fetch_invoices(
     max_retries: int = 3,
     retry_delay: float = 2.0,
     sleep_func=time.sleep,
+    raw_path: Path | None = None,
+    resume: bool = False,
 ) -> list[dict[str, Any]]:
-    all_rows: list[dict[str, Any]] = []
-    start = 0
-    page_no = 0
+    all_rows: list[dict[str, Any]] = _read_raw_rows(raw_path) if resume and raw_path is not None else []
+    start = len(all_rows)
+    page_no = (start // page_size) if page_size else 0
+    if all_rows:
+        eprint(f"[resume] {type_code} raw={raw_path} rows={len(all_rows)}")
     while True:
         page_no += 1
         params = {
@@ -59,7 +81,7 @@ def fetch_invoices(
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 retryable = status_code == 429 or status_code >= 500
-                if not retryable or attempts > max_retries + 1:
+                if not retryable or attempts >= max_retries + 1:
                     raise
                 eprint(
                     f"[retry] {type_code} page={page_no} start={start} "
@@ -67,7 +89,7 @@ def fetch_invoices(
                 )
                 sleep_func(retry_delay)
             except httpx.RequestError as exc:
-                if attempts > max_retries + 1:
+                if attempts >= max_retries + 1:
                     raise
                 eprint(
                     f"[retry] {type_code} page={page_no} start={start} "
@@ -80,6 +102,8 @@ def fetch_invoices(
         if not batch:
             break
         all_rows.extend(batch)
+        if raw_path is not None:
+            _write_raw_rows(raw_path, all_rows)
         if len(batch) < page_size:
             break
         start += len(batch)

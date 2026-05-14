@@ -7,6 +7,7 @@ original `python fpt_einvoice_exporter.py ...` command working.
 
 from fpt_einvoice.api import build_client, fetch_invoices, resolve_types
 from fpt_einvoice.auth import (
+    delete_session_cache,
     portal_login,
     read_session_cache,
     session_account_matches,
@@ -64,6 +65,7 @@ __all__ = [
     "build_ui_export_row",
     "display_date",
     "display_number",
+    "delete_session_cache",
     "eprint",
     "export_workbook",
     "fetch_invoices",

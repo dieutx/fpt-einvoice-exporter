@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpt-einvoice-exporter"
+version = "0.1.0"
+description = "CLI export hoa don FPT eInvoice ra Excel"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "cloakbrowser==0.3.28",
+  "httpx>=0.28.0",
+  "openpyxl>=3.1.5",
+]
+
+[project.scripts]
+fpt-einvoice-exporter = "fpt_einvoice.cli:main"
+
+[tool.setuptools]
+packages = ["fpt_einvoice"]
