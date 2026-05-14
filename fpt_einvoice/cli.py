@@ -72,7 +72,16 @@ def run_export(args: Any) -> dict[str, Any]:
         client = build_client(token)
         try:
             for type_code in requested_types:
-                rows = fetch_invoices(client, type_code, fd, td, args.unl, args.page_size)
+                rows = fetch_invoices(
+                    client,
+                    type_code,
+                    fd,
+                    td,
+                    args.unl,
+                    args.page_size,
+                    max_retries=getattr(args, "max_retries", 3),
+                    retry_delay=getattr(args, "retry_delay", 2.0),
+                )
                 write_json(raw_dir / f"{type_code.replace('/', '_')}.json", rows)
                 label = KNOWN_TYPE_LABELS.get(type_code, type_code)
                 flat_rows = [flatten_invoice(row, label) for row in rows]
@@ -125,6 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--types", default="all-known", help="session | all-known | CSV mã loại HĐ")
     parser.add_argument("--unl", type=int, default=2)
     parser.add_argument("--page-size", type=int, default=2000)
+    parser.add_argument("--max-retries", type=int, default=3, help="Số lần retry cho lỗi API transient 429/5xx")
+    parser.add_argument("--retry-delay", type=float, default=2.0, help="Số giây chờ giữa các lần retry API")
     parser.add_argument("--profile-dir", default="./profiles/default")
     parser.add_argument("--output-dir", default="./output")
     parser.add_argument("--output-name", default=None)

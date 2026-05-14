@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any
 
 import httpx
@@ -25,6 +26,9 @@ def fetch_invoices(
     td: str,
     unl: int,
     page_size: int,
+    max_retries: int = 3,
+    retry_delay: float = 2.0,
+    sleep_func=time.sleep,
 ) -> list[dict[str, Any]]:
     all_rows: list[dict[str, Any]] = []
     start = 0
@@ -45,8 +49,31 @@ def fetch_invoices(
             ),
             "must_count_total": 2,
         }
-        resp = client.get("/api/sea", params=params)
-        resp.raise_for_status()
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                resp = client.get("/api/sea", params=params)
+                resp.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                retryable = status_code == 429 or status_code >= 500
+                if not retryable or attempts > max_retries + 1:
+                    raise
+                eprint(
+                    f"[retry] {type_code} page={page_no} start={start} "
+                    f"status={status_code} attempt={attempts}/{max_retries + 1}"
+                )
+                sleep_func(retry_delay)
+            except httpx.RequestError as exc:
+                if attempts > max_retries + 1:
+                    raise
+                eprint(
+                    f"[retry] {type_code} page={page_no} start={start} "
+                    f"error={exc.__class__.__name__} attempt={attempts}/{max_retries + 1}"
+                )
+                sleep_func(retry_delay)
         payload = resp.json()
         batch = payload.get("data", [])
         eprint(f"[fetch] {type_code} page={page_no} start={start} got={len(batch)}")

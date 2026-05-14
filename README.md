@@ -118,6 +118,8 @@ python fpt_einvoice_exporter.py \
 | `--types` | `all-known`, `session` hoặc CSV mã loại hóa đơn, ví dụ `01GTKT,03XKNB`. |
 | `--unl` | Giá trị `unl` gửi lên API FPT, mặc định `2`. |
 | `--page-size` | Số bản ghi mỗi request API, mặc định `2000`. |
+| `--max-retries` | Số lần retry cho lỗi API transient `429/5xx`, mặc định `3`. |
+| `--retry-delay` | Số giây chờ giữa các lần retry API, mặc định `2.0`. |
 | `--profile-dir` | Thư mục lưu profile CloakBrowser để tái sử dụng session. |
 | `--output-dir` | Thư mục chứa Excel, metadata và raw JSON. |
 | `--output-name` | Tên file Excel tùy chỉnh. Nếu bỏ qua sẽ tự sinh theo khoảng ngày. |
