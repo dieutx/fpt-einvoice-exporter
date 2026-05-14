@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets
+.env
+*.env
+
+# Runtime output
+output/
+profiles/
+*.xlsx
+*.json
+*.png
+*.html
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
