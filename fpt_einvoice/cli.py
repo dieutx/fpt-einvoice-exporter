@@ -1,5 +1,7 @@
 import argparse
+import importlib.util
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,170 @@ from .export import export_workbook, flatten_invoice, write_json
 from .formatting import parse_date
 from .log import eprint
 
+ENV_TEMPLATE = """FPT_EINVOICE_MST=<YOUR_MST>
+FPT_EINVOICE_USERNAME=<YOUR_USERNAME>
+FPT_EINVOICE_PASSWORD=<YOUR_PASSWORD>
+"""
+
+
+def resolve_session_file(args: Any, profile_dir: Path) -> Path:
+    return (
+        Path(args.session_file).expanduser().resolve()
+        if getattr(args, "session_file", None)
+        else profile_dir / "fpt_session.json"
+    )
+
+
+def resolve_runtime_paths(args: Any) -> tuple[Path, Path, Path]:
+    output_dir = Path(getattr(args, "output_dir", "./output")).expanduser().resolve()
+    profile_dir = Path(getattr(args, "profile_dir", "./profiles/default")).expanduser().resolve()
+    session_file = resolve_session_file(args, profile_dir)
+    return output_dir, profile_dir, session_file
+
+
+def run_init(args: Any) -> dict[str, Any]:
+    env_path = Path(args.env_file).expanduser()
+    output_dir = Path(args.output_dir).expanduser()
+    profile_dir = Path(args.profile_dir).expanduser()
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    created_env = False
+    if args.force or not env_path.exists():
+        env_path.write_text(ENV_TEMPLATE, encoding="utf-8")
+        created_env = True
+        try:
+            env_path.chmod(0o600)
+        except OSError:
+            pass
+
+    return {
+        "ok": True,
+        "created_env": created_env,
+        "env_file": str(env_path),
+        "profile_dir": str(profile_dir),
+        "output_dir": str(output_dir),
+        "next": [
+            "Sửa file .env với thông tin đăng nhập FPT eInvoice.",
+            "Chạy: fpt-einvoice-exporter doctor",
+            "Chạy: fpt-einvoice-exporter login --headed",
+        ],
+    }
+
+
+def _doctor_check(name: str, ok: bool, message: str, hint: str = "") -> dict[str, Any]:
+    check = {"name": name, "ok": ok, "message": message}
+    if hint:
+        check["hint"] = hint
+    return check
+
+
+def run_doctor(args: Any) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    checks.append(
+        _doctor_check(
+            "python",
+            sys.version_info >= (3, 9),
+            f"Python {sys.version_info.major}.{sys.version_info.minor}",
+            "Cài Python 3.9+.",
+        )
+    )
+
+    missing_deps = [
+        module
+        for module in ("cloakbrowser", "httpx", "openpyxl")
+        if importlib.util.find_spec(module) is None
+    ]
+    checks.append(
+        _doctor_check(
+            "dependencies",
+            not missing_deps,
+            "Đã cài dependency." if not missing_deps else "Thiếu dependency: " + ", ".join(missing_deps),
+            "Chạy: pip install .",
+        )
+    )
+
+    try:
+        resolve_login_inputs(args, load_login_env(args.env_file))
+        credentials_ok = True
+    except ValueError:
+        credentials_ok = False
+    checks.append(
+        _doctor_check(
+            "credentials",
+            credentials_ok,
+            "Đã có đủ thông tin đăng nhập." if credentials_ok else "Thiếu thông tin đăng nhập trong .env hoặc env vars.",
+            "Chạy: fpt-einvoice-exporter init rồi sửa file .env.",
+        )
+    )
+
+    output_dir, profile_dir, session_file = resolve_runtime_paths(args)
+    for name, path in (("output_dir", output_dir), ("profile_dir", profile_dir)):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            writable = path.is_dir()
+        except OSError:
+            writable = False
+        checks.append(
+            _doctor_check(
+                name,
+                writable,
+                "Có thể ghi thư mục runtime." if writable else "Không thể ghi thư mục runtime.",
+                f"Kiểm tra quyền ghi: {path}",
+            )
+        )
+
+    checks.append(
+        _doctor_check(
+            "session_cache",
+            session_file.exists(),
+            "Đã có session cache." if session_file.exists() else "Chưa có session cache.",
+            "Chạy: fpt-einvoice-exporter login --headed",
+        )
+    )
+
+    return {"ok": all(check["ok"] for check in checks[:-1]), "checks": checks}
+
+
+def run_login(args: Any) -> dict[str, Any]:
+    login_values = resolve_login_inputs(args, load_login_env(args.env_file))
+    _, profile_dir, session_file = resolve_runtime_paths(args)
+
+    login = portal_login(
+        mst=login_values["mst"],
+        username=login_values["username"],
+        password=login_values["password"],
+        profile_dir=profile_dir,
+        headless=not args.headed,
+        login_wait_seconds=args.login_wait_seconds,
+    )
+    context = login["context"]
+    try:
+        session = login["session"]
+        write_session_cache(session_file, session)
+        return {
+            "ok": True,
+            "session_file": str(session_file),
+            "types": resolve_types("session", session),
+            "next": "Chạy export với: fpt-einvoice-exporter export --from-date YYYY-MM-DD --to-date YYYY-MM-DD",
+        }
+    finally:
+        try:
+            context.close()
+        except Exception:
+            pass
+
+
+def run_types(args: Any) -> dict[str, Any]:
+    login_values = resolve_login_inputs(args, load_login_env(args.env_file))
+    _, profile_dir, session_file = resolve_runtime_paths(args)
+    session = read_session_cache(session_file, login_values["mst"], login_values["username"])
+    if not session:
+        raise RuntimeError("Chưa có session cache hợp lệ. Chạy: fpt-einvoice-exporter login --headed")
+    return {"ok": True, "types": resolve_types(args.types, session)}
+
 
 def run_export(args: Any) -> dict[str, Any]:
     login_values = resolve_login_inputs(args, load_login_env(args.env_file))
@@ -21,14 +187,8 @@ def run_export(args: Any) -> dict[str, Any]:
     fd = parse_date(args.from_date, end_of_day=False)
     td = parse_date(args.to_date, end_of_day=True)
 
-    output_dir = Path(args.output_dir).expanduser().resolve()
-    profile_dir = Path(args.profile_dir).expanduser().resolve()
+    output_dir, profile_dir, session_file = resolve_runtime_paths(args)
     raw_dir = output_dir / "raw"
-    session_file = (
-        Path(args.session_file).expanduser().resolve()
-        if args.session_file
-        else profile_dir / "fpt_session.json"
-    )
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -158,14 +318,27 @@ def run_export(args: Any) -> dict[str, Any]:
                 pass
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Export danh sách hóa đơn FPT.eInvoice ra Excel bằng CloakBrowser + API")
+def add_login_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mst", help="Mã số thuế đăng nhập; fallback FPT_EINVOICE_MST")
     parser.add_argument("--username", help="Username đăng nhập; fallback FPT_EINVOICE_USERNAME")
     parser.add_argument("--password", help="Mật khẩu đăng nhập; fallback FPT_EINVOICE_PASSWORD")
     parser.add_argument("--env-file", default=".env", help="File .env chứa credential; mặc định ./.env")
-    parser.add_argument("--from-date", required=True, help="YYYY-MM-DD hoặc DD/MM/YYYY")
-    parser.add_argument("--to-date", required=True, help="YYYY-MM-DD hoặc DD/MM/YYYY")
+
+
+def add_runtime_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--profile-dir", default="./profiles/default")
+    parser.add_argument("--output-dir", default="./output")
+    parser.add_argument(
+        "--session-file",
+        default=None,
+        help="File cache session/token; mặc định <profile-dir>/fpt_session.json",
+    )
+
+
+def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> None:
+    add_login_args(parser)
+    parser.add_argument("--from-date", required=required_dates, help="YYYY-MM-DD hoặc DD/MM/YYYY")
+    parser.add_argument("--to-date", required=required_dates, help="YYYY-MM-DD hoặc DD/MM/YYYY")
     parser.add_argument("--types", default="all-known", help="session | all-known | CSV mã loại HĐ")
     parser.add_argument("--unl", type=int, default=2)
     parser.add_argument("--page-size", type=int, default=2000)
@@ -191,11 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=35,
         help="Số giây chờ nút Đăng nhập sẵn sàng; tăng khi cần tick reCAPTCHA thủ công với --headed",
     )
-    parser.add_argument(
-        "--session-file",
-        default=None,
-        help="File cache session/token; mặc định <profile-dir>/fpt_session.json",
-    )
+    parser.add_argument("--session-file", default=None, help="File cache session/token; mặc định <profile-dir>/fpt_session.json")
     parser.add_argument(
         "--reuse-token",
         dest="reuse_token",
@@ -209,7 +378,61 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Bỏ qua token cache và đăng nhập lại bằng browser",
     )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Export danh sách hóa đơn FPT.eInvoice ra Excel bằng CloakBrowser + API")
+    add_export_args(parser, required_dates=False)
+    subparsers = parser.add_subparsers(dest="command")
+
+    init_parser = subparsers.add_parser("init", help="Tạo .env mẫu và thư mục runtime")
+    init_parser.add_argument("--env-file", default=".env", help="File .env sẽ tạo; mặc định ./.env")
+    init_parser.add_argument("--profile-dir", default="./profiles/default")
+    init_parser.add_argument("--output-dir", default="./output")
+    init_parser.add_argument("--force", action="store_true", help="Ghi đè .env nếu đã tồn tại")
+
+    doctor_parser = subparsers.add_parser("doctor", help="Kiểm tra môi trường trước khi export")
+    add_login_args(doctor_parser)
+    add_runtime_args(doctor_parser)
+
+    login_parser = subparsers.add_parser("login", help="Đăng nhập và lưu session cache")
+    add_login_args(login_parser)
+    login_parser.add_argument("--profile-dir", default="./profiles/default")
+    login_parser.add_argument("--session-file", default=None, help="File cache session/token; mặc định <profile-dir>/fpt_session.json")
+    login_parser.add_argument("--headed", action="store_true", help="Mở browser có giao diện")
+    login_parser.add_argument(
+        "--login-wait-seconds",
+        type=int,
+        default=300,
+        help="Số giây chờ nút Đăng nhập sẵn sàng",
+    )
+
+    types_parser = subparsers.add_parser("types", help="In danh sách loại hóa đơn từ session cache")
+    add_login_args(types_parser)
+    types_parser.add_argument("--profile-dir", default="./profiles/default")
+    types_parser.add_argument("--session-file", default=None, help="File cache session/token; mặc định <profile-dir>/fpt_session.json")
+    types_parser.add_argument("--types", default="session", help="session | all-known | CSV mã loại HĐ")
+
+    export_parser = subparsers.add_parser("export", help="Export hóa đơn ra Excel")
+    add_export_args(export_parser, required_dates=True)
     return parser
+
+
+def run_command(args: Any, parser: argparse.ArgumentParser) -> tuple[dict[str, Any], int]:
+    if args.command == "init":
+        return run_init(args), 0
+    if args.command == "doctor":
+        result = run_doctor(args)
+        return result, 0 if result["ok"] else 1
+    if args.command == "login":
+        return run_login(args), 0
+    if args.command == "types":
+        return run_types(args), 0
+
+    if not args.from_date or not args.to_date:
+        parser.error("export cần --from-date và --to-date")
+    result = run_export(args)
+    return result, 0 if result.get("ok", True) else 3
 
 
 def main() -> int:
@@ -217,9 +440,9 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        result = run_export(args)
+        result, exit_code = run_command(args, parser)
     except (RuntimeError, ValueError) as exc:
         parser.error(str(exc))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
+    return exit_code

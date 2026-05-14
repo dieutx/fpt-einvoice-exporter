@@ -15,7 +15,7 @@ from fpt_einvoice.auth import (
     wait_for_session,
     write_session_cache,
 )
-from fpt_einvoice.cli import build_parser, main, run_export
+from fpt_einvoice.cli import build_parser, main, run_doctor, run_export, run_init, run_login, run_types
 from fpt_einvoice.config import load_login_env, parse_env_file, resolve_login_inputs, strip_inline_comment
 from fpt_einvoice.constants import (
     BASE_URL,
@@ -85,7 +85,11 @@ __all__ = [
     "resolve_login_inputs",
     "resolve_ou_display",
     "resolve_types",
+    "run_doctor",
     "run_export",
+    "run_init",
+    "run_login",
+    "run_types",
     "session_account_matches",
     "sheet_name_for_type",
     "strip_inline_comment",

@@ -55,13 +55,15 @@ Repo này không vendor source CloakBrowser. Package được cài từ `require
 ## Cài đặt
 
 ```bash
+git clone https://github.com/dieutx/fpt-einvoice-exporter.git
+cd fpt-einvoice-exporter
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
+pip install .
+fpt-einvoice-exporter init
 ```
 
-Sửa `.env`:
+Sửa file `.env` vừa được tạo:
 
 ```bash
 FPT_EINVOICE_MST=<YOUR_MST>
@@ -69,48 +71,43 @@ FPT_EINVOICE_USERNAME=<YOUR_USERNAME>
 FPT_EINVOICE_PASSWORD=<YOUR_PASSWORD>
 ```
 
+Kiểm tra môi trường và đăng nhập lần đầu:
+
+```bash
+fpt-einvoice-exporter doctor
+fpt-einvoice-exporter login --headed
+```
+
+Nếu portal yêu cầu reCAPTCHA, tick thủ công trong browser đang mở. Sau khi login thành công, token được lưu trong `profiles/default/fpt_session.json` để các lần export sau không cần mở browser lại.
+
 ## Chạy export
 
-Lệnh tương thích cũ:
+Luồng khuyến nghị:
 
 ```bash
-. .venv/bin/activate
-python fpt_einvoice_exporter.py \
+fpt-einvoice-exporter export \
   --from-date 2026-05-01 \
-  --to-date 2026-05-12 \
-  --types all-known \
-  --profile-dir ./profiles/demo \
-  --output-dir ./output/demo
+  --to-date 2026-05-12
 ```
 
-Có thể chạy qua package:
+Xem các loại hóa đơn tài khoản đang có:
 
 ```bash
-python -m fpt_einvoice \
-  --from-date 2026-05-01 \
-  --to-date 2026-05-12 \
-  --types all-known \
-  --profile-dir ./profiles/demo \
-  --output-dir ./output/demo
+fpt-einvoice-exporter types
 ```
 
-Sau khi cài package bằng `pip install .`, có thể chạy console script:
+Nếu export lớn bị lỗi giữa chừng, chạy lại cùng khoảng ngày và thêm resume:
 
 ```bash
-fpt-einvoice-exporter \
+fpt-einvoice-exporter export \
   --from-date 2026-05-01 \
   --to-date 2026-05-12 \
-  --types all-known \
-  --profile-dir ./profiles/demo \
-  --output-dir ./output/demo
+  --resume
 ```
 
-Override credential tạm bằng env vars:
+Lệnh cũ vẫn dùng được:
 
 ```bash
-FPT_EINVOICE_MST=<YOUR_MST> \
-FPT_EINVOICE_USERNAME=<YOUR_USERNAME> \
-FPT_EINVOICE_PASSWORD='<YOUR_PASSWORD>' \
 python fpt_einvoice_exporter.py \
   --from-date 2026-05-01 \
   --to-date 2026-05-12 \
@@ -144,6 +141,16 @@ python fpt_einvoice_exporter.py \
 | `--session-file` | File cache session/bearer token, mặc định `<profile-dir>/fpt_session.json`. |
 | `--reuse-token` | Dùng bearer token cache trước khi mở browser đăng nhập. Đây là mặc định. |
 | `--no-reuse-token` | Bỏ qua token cache và đăng nhập lại bằng browser. |
+
+## Commands
+
+| Command | Mục đích |
+| --- | --- |
+| `init` | Tạo `.env` mẫu và thư mục runtime. |
+| `doctor` | Kiểm tra Python, dependency, credential, quyền ghi thư mục và session cache. |
+| `login --headed` | Đăng nhập portal, xử lý reCAPTCHA thủ công nếu có, lưu session cache. |
+| `types` | In danh sách loại hóa đơn đọc từ session cache. |
+| `export` | Export hóa đơn ra Excel. |
 
 Giá trị `--types`:
 

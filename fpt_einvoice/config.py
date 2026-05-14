@@ -77,7 +77,7 @@ def resolve_login_inputs(args: Any, env_values: dict[str, str]) -> dict[str, str
             missing.append(arg_name)
             continue
         value = str(raw_value).strip()
-        if not value:
+        if not value or (value.startswith("<YOUR_") and value.endswith(">")):
             missing.append(arg_name)
             continue
         resolved[arg_name] = value
