@@ -122,6 +122,10 @@ python fpt_einvoice_exporter.py \
 | `--output-dir` | Thư mục chứa Excel, metadata và raw JSON. |
 | `--output-name` | Tên file Excel tùy chỉnh. Nếu bỏ qua sẽ tự sinh theo khoảng ngày. |
 | `--headed` | Mở browser có giao diện thay vì headless. |
+| `--login-wait-seconds` | Số giây chờ nút Đăng nhập sẵn sàng. Tăng giá trị này khi cần tick reCAPTCHA thủ công với `--headed`. |
+| `--session-file` | File cache session/bearer token, mặc định `<profile-dir>/fpt_session.json`. |
+| `--reuse-token` | Dùng bearer token cache trước khi mở browser đăng nhập. Đây là mặc định. |
+| `--no-reuse-token` | Bỏ qua token cache và đăng nhập lại bằng browser. |
 
 Giá trị `--types`:
 
@@ -163,6 +167,8 @@ Script không bấm nút “Tải về” trên portal. Flow hiện tại:
 
 Cách này ổn định hơn cho batch lớn và dễ mở rộng để chạy cron hoặc pipeline nội bộ.
 
+Mặc định CLI lưu session/token vào `<profile-dir>/fpt_session.json` sau lần đăng nhập thành công. Các lần chạy sau sẽ đọc token cache trước và gọi API luôn, tránh mở lại browser/reCAPTCHA. Nếu token hết hạn hoặc muốn ép đăng nhập lại, chạy với `--no-reuse-token` hoặc xóa file session cache.
+
 ## Phát triển
 
 Chạy test:
@@ -181,5 +187,6 @@ Test hiện tập trung vào:
 ## Bảo mật dữ liệu
 
 - Không commit `.env`, profile browser, raw JSON, Excel export hoặc dữ liệu hóa đơn thật.
+- Không commit file session/token cache như `fpt_session.json`.
 - Dùng `--profile-dir` riêng cho từng môi trường/tài khoản nếu cần tách session.
 - Khi chia sẻ log lỗi, kiểm tra và xóa MST, username, token, thông tin khách hàng hoặc số hóa đơn nhạy cảm.

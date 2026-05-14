@@ -6,7 +6,14 @@ original `python fpt_einvoice_exporter.py ...` command working.
 """
 
 from fpt_einvoice.api import build_client, fetch_invoices, resolve_types
-from fpt_einvoice.auth import portal_login, wait_for_session
+from fpt_einvoice.auth import (
+    portal_login,
+    read_session_cache,
+    session_account_matches,
+    wait_for_enabled,
+    wait_for_session,
+    write_session_cache,
+)
 from fpt_einvoice.cli import build_parser, main, run_export
 from fpt_einvoice.config import load_login_env, parse_env_file, resolve_login_inputs, strip_inline_comment
 from fpt_einvoice.constants import (
@@ -69,6 +76,7 @@ __all__ = [
     "parse_date",
     "parse_env_file",
     "portal_login",
+    "read_session_cache",
     "resolve_business_class",
     "resolve_cancel_date",
     "resolve_dtl_invs_status",
@@ -76,10 +84,13 @@ __all__ = [
     "resolve_ou_display",
     "resolve_types",
     "run_export",
+    "session_account_matches",
     "sheet_name_for_type",
     "strip_inline_comment",
+    "wait_for_enabled",
     "wait_for_session",
     "write_json",
+    "write_session_cache",
     "write_sheet",
 ]
 

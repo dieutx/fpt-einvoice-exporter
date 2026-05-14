@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .api import build_client, fetch_invoices, resolve_types
-from .auth import portal_login
+from .auth import portal_login, read_session_cache, write_session_cache
 from .config import load_login_env, resolve_login_inputs
 from .constants import KNOWN_TYPE_LABELS
 from .export import export_workbook, flatten_invoice, write_json
@@ -22,6 +22,11 @@ def run_export(args: Any) -> dict[str, Any]:
     output_dir = Path(args.output_dir).expanduser().resolve()
     profile_dir = Path(args.profile_dir).expanduser().resolve()
     raw_dir = output_dir / "raw"
+    session_file = (
+        Path(args.session_file).expanduser().resolve()
+        if args.session_file
+        else profile_dir / "fpt_session.json"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -32,16 +37,30 @@ def run_export(args: Any) -> dict[str, Any]:
         safe_to = td[:10]
         output_xlsx = output_dir / f"fpt_einvoice_{safe_from}_to_{safe_to}.xlsx"
 
-    login = portal_login(
-        mst=login_values["mst"],
-        username=login_values["username"],
-        password=login_values["password"],
-        profile_dir=profile_dir,
-        headless=not args.headed,
-    )
-    context = login["context"]
-    session = login["session"]
-    token = login["token"]
+    context = None
+    session = None
+    if args.reuse_token:
+        session = read_session_cache(session_file, login_values["mst"], login_values["username"])
+        if session:
+            eprint(f"[login] Dùng bearer token cache: {session_file}")
+
+    if session:
+        token = session["token"]
+    else:
+        login = portal_login(
+            mst=login_values["mst"],
+            username=login_values["username"],
+            password=login_values["password"],
+            profile_dir=profile_dir,
+            headless=not args.headed,
+            login_wait_seconds=args.login_wait_seconds,
+        )
+        context = login["context"]
+        session = login["session"]
+        token = login["token"]
+        if args.reuse_token:
+            write_session_cache(session_file, session)
+            eprint(f"[login] Đã lưu bearer token cache: {session_file}")
 
     try:
         requested_types = resolve_types(args.types, session)
@@ -88,10 +107,11 @@ def run_export(args: Any) -> dict[str, Any]:
             "total_rows": metadata["total_rows"],
         }
     finally:
-        try:
-            context.close()
-        except Exception:
-            pass
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,6 +129,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="./output")
     parser.add_argument("--output-name", default=None)
     parser.add_argument("--headed", action="store_true", help="Mở browser có giao diện")
+    parser.add_argument(
+        "--login-wait-seconds",
+        type=int,
+        default=35,
+        help="Số giây chờ nút Đăng nhập sẵn sàng; tăng khi cần tick reCAPTCHA thủ công với --headed",
+    )
+    parser.add_argument(
+        "--session-file",
+        default=None,
+        help="File cache session/token; mặc định <profile-dir>/fpt_session.json",
+    )
+    parser.add_argument(
+        "--reuse-token",
+        dest="reuse_token",
+        action="store_true",
+        default=True,
+        help="Dùng bearer token cache trước khi mở browser đăng nhập (mặc định)",
+    )
+    parser.add_argument(
+        "--no-reuse-token",
+        dest="reuse_token",
+        action="store_false",
+        help="Bỏ qua token cache và đăng nhập lại bằng browser",
+    )
     return parser
 
 
