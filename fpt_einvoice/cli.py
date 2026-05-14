@@ -250,6 +250,8 @@ def run_export(args: Any) -> dict[str, Any]:
                         retry_delay=getattr(args, "retry_delay", 2.0),
                         raw_path=raw_path,
                         resume=getattr(args, "resume", False),
+                        adaptive_page_size=getattr(args, "adaptive_page_size", True),
+                        min_page_size=getattr(args, "min_page_size", 10),
                     )
                     write_json(raw_path, rows)
                 except httpx.HTTPStatusError as exc:
@@ -283,6 +285,13 @@ def run_export(args: Any) -> dict[str, Any]:
         finally:
             client.close()
 
+        warnings = []
+        if errors:
+            warnings.append(
+                "Export chỉ hoàn tất một phần. Không dùng workbook này làm kết quả cuối nếu còn lỗi; "
+                "chạy lại cùng tham số với --resume sau khi API ổn định."
+            )
+
         metadata = {
             "mst": login_values["mst"],
             "username": login_values["username"],
@@ -291,6 +300,7 @@ def run_export(args: Any) -> dict[str, Any]:
             "types": requested_types,
             "counts": {code: len(rows) for code, rows in by_type.items()},
             "errors": errors,
+            "warnings": warnings,
             "total_rows": len(all_rows),
             "profile_dir": str(profile_dir),
             "session_uid": session.get("uid"),
@@ -308,6 +318,7 @@ def run_export(args: Any) -> dict[str, Any]:
             "metadata_json": str(output_dir / "metadata.json"),
             "counts": metadata["counts"],
             "errors": errors,
+            "warnings": warnings,
             "total_rows": metadata["total_rows"],
         }
     finally:
@@ -342,8 +353,16 @@ def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> No
     parser.add_argument("--types", default="all-known", help="session | all-known | CSV mã loại HĐ")
     parser.add_argument("--unl", type=int, default=2)
     parser.add_argument("--page-size", type=int, default=2000)
+    parser.add_argument("--min-page-size", type=int, default=10, help="Page size nhỏ nhất khi tự giảm do API 502/504")
     parser.add_argument("--max-retries", type=int, default=3, help="Số lần retry cho lỗi API transient 429/5xx")
     parser.add_argument("--retry-delay", type=float, default=2.0, help="Số giây chờ giữa các lần retry API")
+    parser.add_argument(
+        "--no-adaptive-page-size",
+        dest="adaptive_page_size",
+        action="store_false",
+        default=True,
+        help="Tắt tự giảm page size khi API trả 502/504",
+    )
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -441,6 +460,12 @@ def main() -> int:
 
     try:
         result, exit_code = run_command(args, parser)
+    except KeyboardInterrupt:
+        eprint(
+            "Đã dừng theo Ctrl+C. Raw JSON đã checkpoint sau mỗi page thành công; "
+            "chạy lại cùng tham số và thêm --resume để tiếp tục."
+        )
+        return 130
     except (RuntimeError, ValueError) as exc:
         parser.error(str(exc))
 

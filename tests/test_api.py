@@ -13,7 +13,7 @@ class FakeClient:
         self.calls = []
 
     def get(self, path, params):
-        self.calls.append((path, params))
+        self.calls.append((path, dict(params)))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -120,6 +120,57 @@ class ApiFetchTests(unittest.TestCase):
                 )
 
             self.assertEqual(raw_path.read_text(encoding="utf-8"), '[\n  {\n    "inc": 1\n  }\n]')
+
+    def test_fetch_invoices_reduces_page_size_after_gateway_errors(self):
+        client = FakeClient(
+            [
+                json_response(502, {"error": "bad gateway"}),
+                json_response(200, {"data": [{"inc": 1}, {"inc": 2}]}),
+            ]
+        )
+        sleeps = []
+
+        rows = fetch_invoices(
+            client,
+            "01/MTT",
+            "2025-01-01 00:00:00",
+            "2025-01-31 23:59:59",
+            2,
+            2000,
+            max_retries=0,
+            retry_delay=0,
+            sleep_func=sleeps.append,
+            adaptive_page_size=True,
+            min_page_size=100,
+        )
+
+        self.assertEqual(rows, [{"inc": 1}, {"inc": 2}])
+        self.assertEqual(client.calls[0][1]["count"], 2000)
+        self.assertEqual(client.calls[1][1]["count"], 500)
+
+    def test_fetch_invoices_reduces_page_size_to_configured_floor(self):
+        client = FakeClient(
+            [
+                json_response(502, {"error": "bad gateway"}),
+                json_response(200, {"data": [{"inc": 1}]}),
+            ]
+        )
+
+        rows = fetch_invoices(
+            client,
+            "01/MTT",
+            "2025-01-01 00:00:00",
+            "2025-01-31 23:59:59",
+            2,
+            50,
+            max_retries=0,
+            retry_delay=0,
+            adaptive_page_size=True,
+            min_page_size=10,
+        )
+
+        self.assertEqual(rows, [{"inc": 1}])
+        self.assertEqual(client.calls[1][1]["count"], 10)
 
 
 if __name__ == "__main__":

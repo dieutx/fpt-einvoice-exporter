@@ -271,6 +271,72 @@ class SessionCacheTests(unittest.TestCase):
         self.assertEqual(metadata["counts"], {"OK": 1})
         self.assertIn("ERR", metadata["errors"])
 
+    def test_run_export_partial_result_includes_resume_warning(self):
+        session = {
+            "uid": "0123456789.demo_user",
+            "token": "cached-token",
+            "itype": "ERR,OK",
+        }
+
+        class FakeClient:
+            def close(self):
+                pass
+
+        args = argparse.Namespace(
+            mst="0123456789",
+            username="demo_user",
+            password="demo-pass",
+            env_file=None,
+            from_date="2025-01-01",
+            to_date="2025-01-31",
+            types="session",
+            unl=2,
+            page_size=100,
+            min_page_size=10,
+            adaptive_page_size=True,
+            profile_dir="profile",
+            output_dir="output",
+            output_name=None,
+            headed=False,
+            login_wait_seconds=35,
+            reuse_token=True,
+            session_file=None,
+            max_retries=0,
+            retry_delay=0,
+            resume=False,
+            continue_on_error=True,
+        )
+        response = httpx.Response(
+            502,
+            json={"error": "bad gateway"},
+            request=httpx.Request("GET", "https://portal.einvoice.fpt.com.vn/api/sea"),
+        )
+        gateway_error = httpx.HTTPStatusError("bad gateway", request=response.request, response=response)
+
+        def fetch_side_effect(client, type_code, *args, **kwargs):
+            if type_code == "ERR":
+                raise gateway_error
+            return [{"inc": 10, "idt": "2025-01-02T00:00:00"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            args.profile_dir = str(tmp_path / "profile")
+            args.output_dir = str(tmp_path / "output")
+            auth.write_session_cache(tmp_path / "profile" / "fpt_session.json", session)
+
+            with (
+                mock.patch("fpt_einvoice.cli.build_client", return_value=FakeClient()),
+                mock.patch("fpt_einvoice.cli.fetch_invoices", side_effect=fetch_side_effect),
+            ):
+                result = cli.run_export(args)
+
+            metadata = json.loads((tmp_path / "output" / "metadata.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(result["ok"])
+        self.assertIn("warnings", result)
+        self.assertTrue(any("--resume" in warning for warning in result["warnings"]))
+        self.assertEqual(metadata["warnings"], result["warnings"])
+
     def test_main_prints_runtime_errors_without_traceback(self):
         argv = [
             "fpt-einvoice-exporter",
@@ -291,6 +357,27 @@ class SessionCacheTests(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("Token cache hết hạn", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_main_prints_keyboard_interrupt_without_traceback(self):
+        argv = [
+            "fpt-einvoice-exporter",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ]
+        stderr = io.StringIO()
+
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch("sys.stderr", stderr),
+            mock.patch("fpt_einvoice.cli.run_export", side_effect=KeyboardInterrupt()),
+        ):
+            exit_code = cli.main()
+
+        self.assertEqual(exit_code, 130)
+        self.assertIn("--resume", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
 

@@ -26,6 +26,13 @@ def _write_raw_rows(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _next_smaller_page_size(page_size: int, min_page_size: int) -> int:
+    for candidate in (500, 100, 10):
+        if page_size > candidate >= min_page_size:
+            return candidate
+    return max(min_page_size, min(page_size - 1, page_size))
+
+
 def resolve_types(requested: str, session: dict[str, Any]) -> list[str]:
     session_types = [x.strip() for x in str(session.get("itype", "")).split(",") if x.strip()]
     if requested == "session":
@@ -49,17 +56,20 @@ def fetch_invoices(
     sleep_func=time.sleep,
     raw_path: Path | None = None,
     resume: bool = False,
+    adaptive_page_size: bool = True,
+    min_page_size: int = 10,
 ) -> list[dict[str, Any]]:
     all_rows: list[dict[str, Any]] = _read_raw_rows(raw_path) if resume and raw_path is not None else []
+    current_page_size = page_size
     start = len(all_rows)
-    page_no = (start // page_size) if page_size else 0
+    page_no = (start // current_page_size) if current_page_size else 0
     if all_rows:
         eprint(f"[resume] {type_code} raw={raw_path} rows={len(all_rows)}")
     while True:
         page_no += 1
         params = {
             "start": start,
-            "count": page_size,
+            "count": current_page_size,
             "filter": json.dumps(
                 {
                     "fd": fd,
@@ -81,13 +91,29 @@ def fetch_invoices(
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 retryable = status_code == 429 or status_code >= 500
-                if not retryable or attempts >= max_retries + 1:
-                    raise
-                eprint(
-                    f"[retry] {type_code} page={page_no} start={start} "
-                    f"status={status_code} attempt={attempts}/{max_retries + 1}"
+                if retryable and attempts < max_retries + 1:
+                    eprint(
+                        f"[retry] {type_code} page={page_no} start={start} "
+                        f"status={status_code} attempt={attempts}/{max_retries + 1}"
+                    )
+                    sleep_func(retry_delay)
+                    continue
+                can_reduce_page = (
+                    adaptive_page_size
+                    and status_code in (502, 504)
+                    and current_page_size > min_page_size
                 )
-                sleep_func(retry_delay)
+                if not retryable or not can_reduce_page:
+                    raise
+                reduced_page_size = _next_smaller_page_size(current_page_size, min_page_size)
+                eprint(
+                    f"[adaptive-page-size] {type_code} page={page_no} start={start} "
+                    f"status={status_code} count={current_page_size}->{reduced_page_size}"
+                )
+                current_page_size = reduced_page_size
+                params["count"] = current_page_size
+                attempts = 0
+                continue
             except httpx.RequestError as exc:
                 if attempts >= max_retries + 1:
                     raise
@@ -104,7 +130,7 @@ def fetch_invoices(
         all_rows.extend(batch)
         if raw_path is not None:
             _write_raw_rows(raw_path, all_rows)
-        if len(batch) < page_size:
+        if len(batch) < current_page_size:
             break
         start += len(batch)
     return all_rows

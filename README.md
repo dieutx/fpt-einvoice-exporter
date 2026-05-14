@@ -105,6 +105,17 @@ fpt-einvoice-exporter export \
   --resume
 ```
 
+Khi API FPT trả `502/504`, CLI mặc định tự giảm page size theo bậc nhỏ hơn rồi retry cùng page. Với bộ dữ liệu lớn, có thể chạy an toàn hơn bằng:
+
+```bash
+fpt-einvoice-exporter export \
+  --from-date 2026-05-01 \
+  --to-date 2026-05-12 \
+  --page-size 100 \
+  --resume \
+  --continue-on-error
+```
+
 Lệnh cũ vẫn dùng được:
 
 ```bash
@@ -129,8 +140,10 @@ python fpt_einvoice_exporter.py \
 | `--types` | `all-known`, `session` hoặc CSV mã loại hóa đơn, ví dụ `01GTKT,03XKNB`. |
 | `--unl` | Giá trị `unl` gửi lên API FPT, mặc định `2`. |
 | `--page-size` | Số bản ghi mỗi request API, mặc định `2000`. |
+| `--min-page-size` | Page size nhỏ nhất khi CLI tự giảm do API `502/504`, mặc định `10`. |
 | `--max-retries` | Số lần retry cho lỗi API transient `429/5xx`, mặc định `3`. |
 | `--retry-delay` | Số giây chờ giữa các lần retry API, mặc định `2.0`. |
+| `--no-adaptive-page-size` | Tắt tự giảm page size khi API trả `502/504`. |
 | `--resume` | Tiếp tục từ raw JSON đã có trong `output/raw`, bỏ qua các page đã lưu. |
 | `--continue-on-error` | Nếu một loại hóa đơn lỗi, vẫn ghi workbook cho các loại thành công và lưu lỗi vào metadata. |
 | `--profile-dir` | Thư mục lưu profile CloakBrowser để tái sử dụng session. |
@@ -182,6 +195,8 @@ Khi chạy thành công, CLI in JSON kết quả ra stdout, gồm đường dẫ
 
 Nếu chạy với `--continue-on-error`, kết quả và `metadata.json` có thêm `errors` theo mã loại hóa đơn. Khi có lỗi bị bỏ qua, trường `ok` là `false` để báo đây là file xuất một phần.
 
+Nếu export bị dừng bằng `Ctrl+C`, CLI không xóa raw JSON đã checkpoint. Chạy lại cùng tham số và thêm `--resume` để tiếp tục từ page đã lưu. Nếu kết quả có `warnings`, xem workbook đó là output một phần cho tới khi chạy lại thành công không còn lỗi.
+
 ## Cách hoạt động
 
 Script không bấm nút “Tải về” trên portal. Flow hiện tại:
@@ -198,6 +213,8 @@ Cách này ổn định hơn cho batch lớn và dễ mở rộng để chạy c
 Mặc định CLI lưu session/token vào `<profile-dir>/fpt_session.json` sau lần đăng nhập thành công. Các lần chạy sau sẽ đọc token cache trước và gọi API luôn, tránh mở lại browser/reCAPTCHA. Nếu API trả `401/403` khi dùng token cache, CLI sẽ xóa cache và yêu cầu chạy lại để đăng nhập mới. Nếu muốn ép đăng nhập lại, chạy với `--no-reuse-token` hoặc xóa file session cache.
 
 Khi export lớn bị gián đoạn, chạy lại cùng `--output-dir`, `--types`, khoảng ngày và thêm `--resume`. CLI sẽ đọc các file `output/raw/*.json` đã có, bắt đầu page tiếp theo từ số dòng đã lưu và tiếp tục checkpoint sau mỗi page.
+
+Khi API FPT trả gateway error `502/504`, CLI tự giảm page size rồi gọi lại cùng `start`. Ví dụ từ mặc định `2000` có thể giảm xuống `500`, `100`, rồi `10` nếu cần. Cơ chế này giúp export dữ liệu lớn ổn định hơn mà user không phải tự đổi tham số sau mỗi lỗi.
 
 ## Phát triển
 
