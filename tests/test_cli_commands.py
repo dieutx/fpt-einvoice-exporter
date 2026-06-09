@@ -172,6 +172,73 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIsNone(run_export.call_args.args[0].command)
 
+    def test_run_export_rejects_reverse_date_range_before_login(self):
+        args = argparse.Namespace(
+            mst="0123456789",
+            username="demo_user",
+            password="demo-pass",
+            env_file=None,
+            from_date="2025-02-01",
+            to_date="2025-01-31",
+            types="session",
+            unl=2,
+            page_size=100,
+            min_page_size=10,
+            max_retries=0,
+            retry_delay=0,
+            adaptive_page_size=True,
+            profile_dir="profile",
+            output_dir="output",
+            output_name=None,
+            headed=False,
+            login_wait_seconds=35,
+            reuse_token=True,
+            session_file=None,
+            resume=False,
+            continue_on_error=False,
+        )
+
+        with (
+            mock.patch("fpt_einvoice.cli.portal_login") as portal_login,
+            self.assertRaisesRegex(ValueError, "--to-date"),
+        ):
+            cli.run_export(args)
+
+        portal_login.assert_not_called()
+
+    def test_run_export_rejects_output_name_with_path_components(self):
+        args = argparse.Namespace(
+            mst="0123456789",
+            username="demo_user",
+            password="demo-pass",
+            env_file=None,
+            from_date="2025-01-01",
+            to_date="2025-01-31",
+            types="session",
+            unl=2,
+            page_size=100,
+            min_page_size=10,
+            max_retries=0,
+            retry_delay=0,
+            adaptive_page_size=True,
+            profile_dir="profile",
+            output_dir="output",
+            output_name="../leak.xlsx",
+            headed=False,
+            login_wait_seconds=35,
+            reuse_token=True,
+            session_file=None,
+            resume=False,
+            continue_on_error=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args.profile_dir = str(Path(tmp) / "profile")
+            args.output_dir = str(Path(tmp) / "output")
+
+            with self.assertRaisesRegex(ValueError, "--output-name"):
+                cli.run_export(args)
+
 
 if __name__ == "__main__":
     unittest.main()

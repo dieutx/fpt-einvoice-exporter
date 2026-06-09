@@ -22,6 +22,36 @@ FPT_EINVOICE_PASSWORD=<YOUR_PASSWORD>
 """
 
 
+def positive_int_arg(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("phải là số nguyên") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("phải lớn hơn 0")
+    return value
+
+
+def non_negative_int_arg(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("phải là số nguyên") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("không được âm")
+    return value
+
+
+def non_negative_float_arg(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("phải là số") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("không được âm")
+    return value
+
+
 def resolve_session_file(args: Any, profile_dir: Path) -> Path:
     return (
         Path(args.session_file).expanduser().resolve()
@@ -35,6 +65,41 @@ def resolve_runtime_paths(args: Any) -> tuple[Path, Path, Path]:
     profile_dir = Path(getattr(args, "profile_dir", "./profiles/default")).expanduser().resolve()
     session_file = resolve_session_file(args, profile_dir)
     return output_dir, profile_dir, session_file
+
+
+def resolve_output_xlsx(output_dir: Path, output_name: str | None, fd: str, td: str) -> Path:
+    if output_name:
+        if output_name in {".", ".."} or "/" in output_name or "\\" in output_name:
+            raise ValueError("--output-name chỉ được là tên file, không được chứa đường dẫn")
+        return output_dir / output_name
+
+    safe_from = fd[:10]
+    safe_to = td[:10]
+    return output_dir / f"fpt_einvoice_{safe_from}_to_{safe_to}.xlsx"
+
+
+def validate_export_args(args: Any, fd: str, td: str) -> None:
+    if td < fd:
+        raise ValueError("--to-date phải cùng ngày hoặc sau --from-date")
+
+    page_size = int(getattr(args, "page_size", 2000))
+    min_page_size = int(getattr(args, "min_page_size", 10))
+    max_retries = int(getattr(args, "max_retries", 3))
+    retry_delay = float(getattr(args, "retry_delay", 2.0))
+    login_wait_seconds = int(getattr(args, "login_wait_seconds", 35))
+
+    if page_size <= 0:
+        raise ValueError("--page-size phải lớn hơn 0")
+    if min_page_size <= 0:
+        raise ValueError("--min-page-size phải lớn hơn 0")
+    if min_page_size > page_size:
+        raise ValueError("--min-page-size không được lớn hơn --page-size")
+    if max_retries < 0:
+        raise ValueError("--max-retries không được âm")
+    if retry_delay < 0:
+        raise ValueError("--retry-delay không được âm")
+    if login_wait_seconds <= 0:
+        raise ValueError("--login-wait-seconds phải lớn hơn 0")
 
 
 def run_init(args: Any) -> dict[str, Any]:
@@ -186,18 +251,13 @@ def run_export(args: Any) -> dict[str, Any]:
 
     fd = parse_date(args.from_date, end_of_day=False)
     td = parse_date(args.to_date, end_of_day=True)
+    validate_export_args(args, fd, td)
 
     output_dir, profile_dir, session_file = resolve_runtime_paths(args)
     raw_dir = output_dir / "raw"
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.output_name:
-        output_xlsx = output_dir / args.output_name
-    else:
-        safe_from = fd[:10]
-        safe_to = td[:10]
-        output_xlsx = output_dir / f"fpt_einvoice_{safe_from}_to_{safe_to}.xlsx"
+    output_xlsx = resolve_output_xlsx(output_dir, args.output_name, fd, td)
 
     context = None
     session = None
@@ -351,11 +411,26 @@ def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> No
     parser.add_argument("--from-date", required=required_dates, help="YYYY-MM-DD hoặc DD/MM/YYYY")
     parser.add_argument("--to-date", required=required_dates, help="YYYY-MM-DD hoặc DD/MM/YYYY")
     parser.add_argument("--types", default="all-known", help="session | all-known | CSV mã loại HĐ")
-    parser.add_argument("--unl", type=int, default=2)
-    parser.add_argument("--page-size", type=int, default=2000)
-    parser.add_argument("--min-page-size", type=int, default=10, help="Page size nhỏ nhất khi tự giảm do API 502/504")
-    parser.add_argument("--max-retries", type=int, default=3, help="Số lần retry cho lỗi API transient 429/5xx")
-    parser.add_argument("--retry-delay", type=float, default=2.0, help="Số giây chờ giữa các lần retry API")
+    parser.add_argument("--unl", type=positive_int_arg, default=2)
+    parser.add_argument("--page-size", type=positive_int_arg, default=2000)
+    parser.add_argument(
+        "--min-page-size",
+        type=positive_int_arg,
+        default=10,
+        help="Page size nhỏ nhất khi tự giảm do API 502/504",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=non_negative_int_arg,
+        default=3,
+        help="Số lần retry cho lỗi API transient 429/5xx",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=non_negative_float_arg,
+        default=2.0,
+        help="Số giây chờ giữa các lần retry API",
+    )
     parser.add_argument(
         "--no-adaptive-page-size",
         dest="adaptive_page_size",
@@ -379,7 +454,7 @@ def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> No
     parser.add_argument("--headed", action="store_true", help="Mở browser có giao diện")
     parser.add_argument(
         "--login-wait-seconds",
-        type=int,
+        type=positive_int_arg,
         default=35,
         help="Số giây chờ nút Đăng nhập sẵn sàng; tăng khi cần tick reCAPTCHA thủ công với --headed",
     )
@@ -421,7 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--headed", action="store_true", help="Mở browser có giao diện")
     login_parser.add_argument(
         "--login-wait-seconds",
-        type=int,
+        type=positive_int_arg,
         default=300,
         help="Số giây chờ nút Đăng nhập sẵn sàng",
     )
