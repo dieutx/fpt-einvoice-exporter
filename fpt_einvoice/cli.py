@@ -411,7 +411,7 @@ def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> No
     parser.add_argument("--from-date", required=required_dates, help="YYYY-MM-DD hoặc DD/MM/YYYY")
     parser.add_argument("--to-date", required=required_dates, help="YYYY-MM-DD hoặc DD/MM/YYYY")
     parser.add_argument("--types", default="all-known", help="session | all-known | CSV mã loại HĐ")
-    parser.add_argument("--unl", type=positive_int_arg, default=2)
+    parser.add_argument("--unl", type=int, default=2)
     parser.add_argument("--page-size", type=positive_int_arg, default=2000)
     parser.add_argument(
         "--min-page-size",

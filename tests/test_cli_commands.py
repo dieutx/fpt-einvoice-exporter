@@ -172,6 +172,29 @@ class CliCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIsNone(run_export.call_args.args[0].command)
 
+    def test_main_keeps_unl_as_raw_api_integer(self):
+        argv = [
+            "fpt-einvoice-exporter",
+            "export",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+            "--unl",
+            "0",
+        ]
+        stdout = io.StringIO()
+
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch("sys.stdout", stdout),
+            mock.patch("fpt_einvoice.cli.run_export", return_value={"ok": True}) as run_export,
+        ):
+            exit_code = cli.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(run_export.call_args.args[0].unl, 0)
+
     def test_run_export_rejects_reverse_date_range_before_login(self):
         args = argparse.Namespace(
             mst="0123456789",
