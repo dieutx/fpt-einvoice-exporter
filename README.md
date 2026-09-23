@@ -1,264 +1,136 @@
 # FPT eInvoice Exporter
 
-CLI Python để đăng nhập `portal.einvoice.fpt.com.vn`, lấy bearer token từ session web, gọi API tra cứu hóa đơn và xuất workbook Excel theo khoảng ngày.
+Tải hóa đơn từ FPT eInvoice và xuất Excel theo tháng hoặc năm, giữ định dạng cột và cách chuyển đổi dữ liệu của giao diện FPT.
 
-## Tính năng
+## 1. Cài đặt
 
-- Đăng nhập FPT eInvoice bằng CloakBrowser với profile có thể tái sử dụng.
-- Đọc credential từ `.env`, biến môi trường hoặc tham số CLI.
-- Query hóa đơn theo khoảng ngày và loại hóa đơn.
-- Lưu raw JSON theo từng loại hóa đơn để đối soát/debug.
-- Có thể resume từ raw JSON đã lưu để không tải lại các page đã hoàn tất.
-- Có thể tiếp tục khi một loại hóa đơn lỗi và vẫn xuất workbook cho các loại thành công.
-- Xuất Excel gồm `metadata`, `summary`, `invoices_all` và sheet riêng theo từng loại hóa đơn.
-- Format cột Excel theo thứ tự gần với màn hình export của web app.
-
-## Cấu trúc repo
-
-```text
-.
-├── fpt_einvoice/              # Package chính
-│   ├── api.py                 # HTTP client, resolve loại hóa đơn, fetch API /api/sea
-│   ├── auth.py                # Đăng nhập portal và lấy session token
-│   ├── cli.py                 # Parser CLI và flow export chính
-│   ├── config.py              # Đọc .env/env vars và validate credential
-│   ├── constants.py           # URL, mã loại hóa đơn, mapping trạng thái, schema cột
-│   ├── export.py              # Chuẩn hóa dòng hóa đơn và ghi workbook/raw JSON
-│   ├── formatting.py          # Format ngày, số, nhãn hiển thị
-│   └── log.py                 # Helper log stderr
-├── fpt_einvoice_exporter.py   # Wrapper giữ lệnh cũ: python fpt_einvoice_exporter.py
-├── tests/                     # Unit tests cho env, schema Excel, package structure
-├── .env.example               # Mẫu credential local
-├── pyproject.toml             # Metadata package và console script
-├── requirements.txt           # Runtime dependencies
-└── README.md
-```
-
-Các thư mục runtime như `output/`, `profiles/`, file `.env`, `.xlsx`, `.json` không được commit theo `.gitignore`.
-
-## Yêu cầu
-
-- Python 3.9+
-- Linux/macOS có thể chạy CloakBrowser
-- Tài khoản FPT eInvoice hợp lệ
-
-Dependency chính:
-
-```text
-cloakbrowser==0.3.28
-httpx>=0.28.0
-openpyxl>=3.1.5
-```
-
-Repo này không vendor source CloakBrowser. Package được cài từ `requirements.txt` và script import qua `from cloakbrowser import launch_persistent_context`. Version `0.3.28` đang được pin vì đã test thực tế với portal FPT, nơi có load Google reCAPTCHA.
-
-## Cài đặt
+Dùng Python 3.11+ và chạy các lệnh sau trong terminal:
 
 ```bash
 git clone https://github.com/dieutx/fpt-einvoice-exporter.git
 cd fpt-einvoice-exporter
 python3 -m venv .venv
-. .venv/bin/activate
-pip install .
-fpt-einvoice-exporter init
+source .venv/bin/activate
+pip install -e .
 ```
 
-Sửa file `.env` vừa được tạo:
+Các lệnh bên dưới chạy tại thư mục repo, sau khi kích hoạt `.venv`.
 
-```bash
-FPT_EINVOICE_MST=<YOUR_MST>
-FPT_EINVOICE_USERNAME=<YOUR_USERNAME>
-FPT_EINVOICE_PASSWORD=<YOUR_PASSWORD>
+## 2. Cấu hình đăng nhập
+
+Tạo file `.env` tại thư mục repo, điền thông tin thật thay cho các giá trị mẫu:
+
+```dotenv
+FPT_EINVOICE_MST=<MA_SO_THUE>
+FPT_EINVOICE_USERNAME=<TEN_DANG_NHAP>
+FPT_EINVOICE_TOKEN=<TOKEN_HIEN_TAI>
 ```
 
-Kiểm tra môi trường và đăng nhập lần đầu:
+Có token: tool gọi API trực tiếp, bỏ qua browser login. Khi token hết hạn, cập nhật `.env` rồi chạy lại lệnh export.
+
+<details>
+<summary>Đăng nhập bằng mật khẩu nếu chưa có token</summary>
+
+Bỏ dòng `FPT_EINVOICE_TOKEN` khỏi `.env`, thêm mật khẩu:
+
+```dotenv
+FPT_EINVOICE_PASSWORD=<MAT_KHAU>
+```
+
+Sau đó chạy:
 
 ```bash
-fpt-einvoice-exporter doctor
 fpt-einvoice-exporter login --headed
 ```
 
-Nếu portal yêu cầu reCAPTCHA, tick thủ công trong browser đang mở. Sau khi login thành công, token được lưu trong `profiles/default/fpt_session.json` để các lần export sau không cần mở browser lại.
+Hoàn thành reCAPTCHA nếu được yêu cầu. Session được lưu tại `profiles/default/fpt_session.json` để dùng cho các lần export sau.
 
-## Chạy export
+</details>
 
-Luồng khuyến nghị:
-
-```bash
-fpt-einvoice-exporter export \
-  --from-date 2026-05-01 \
-  --to-date 2026-05-12
-```
-
-Xem các loại hóa đơn tài khoản đang có:
+## 3. Tải hóa đơn cả năm
 
 ```bash
-fpt-einvoice-exporter types
+fpt-einvoice-exporter export-year --year 2022 --resume
+fpt-einvoice-exporter export-year --year 2023 --resume
 ```
 
-Nếu export lớn bị lỗi giữa chừng, chạy lại cùng khoảng ngày và thêm resume:
+Mỗi lệnh chạy tháng 01 → 12, chia mỗi tháng thành **01–10, 11–20, 21–cuối tháng**, rồi tạo một file Excel cho tháng đó. Tháng không có hóa đơn vẫn tạo file với header.
 
-```bash
-fpt-einvoice-exporter export \
-  --from-date 2026-05-01 \
-  --to-date 2026-05-12 \
-  --resume
-```
+Mặc định của `export-year`:
 
-Khi API FPT trả `502/504`, CLI mặc định tự giảm page size theo bậc nhỏ hơn rồi retry cùng page. Với bộ dữ liệu lớn, có thể chạy an toàn hơn bằng:
-
-```bash
-fpt-einvoice-exporter export \
-  --from-date 2026-05-01 \
-  --to-date 2026-05-12 \
-  --page-size 100 \
-  --resume \
-  --continue-on-error
-```
-
-Lệnh cũ vẫn dùng được:
-
-```bash
-python fpt_einvoice_exporter.py \
-  --from-date 2026-05-01 \
-  --to-date 2026-05-12 \
-  --types all-known \
-  --profile-dir ./profiles/demo \
-  --output-dir ./output/demo
-```
-
-## Tham số CLI
-
-| Tham số | Mô tả |
+| Thiết lập | Giá trị |
 | --- | --- |
-| `--mst` | Mã số thuế đăng nhập. Nếu bỏ qua sẽ đọc `FPT_EINVOICE_MST`. |
-| `--username` | Username đăng nhập. Nếu bỏ qua sẽ đọc `FPT_EINVOICE_USERNAME`. |
-| `--password` | Mật khẩu. Nếu bỏ qua sẽ đọc `FPT_EINVOICE_PASSWORD`. |
-| `--env-file` | File `.env` chứa credential, mặc định `./.env`. |
-| `--from-date` | Ngày bắt đầu, dạng `YYYY-MM-DD` hoặc `DD/MM/YYYY`. |
-| `--to-date` | Ngày kết thúc, dạng `YYYY-MM-DD` hoặc `DD/MM/YYYY`. |
-| `--types` | `all-known`, `session` hoặc CSV mã loại hóa đơn, ví dụ `01GTKT,03XKNB`. |
-| `--unl` | Giá trị `unl` gửi lên API FPT, mặc định `2`. |
-| `--page-size` | Số bản ghi mỗi request API, mặc định `2000`. |
-| `--min-page-size` | Page size nhỏ nhất khi CLI tự giảm do API `502/504`, mặc định `10`. |
-| `--max-retries` | Số lần retry cho lỗi API transient `429/5xx`, mặc định `3`. |
-| `--retry-delay` | Số giây chờ giữa các lần retry API, mặc định `2.0`. |
-| `--no-adaptive-page-size` | Tắt tự giảm page size khi API trả `502/504`. |
-| `--resume` | Tiếp tục từ raw JSON đã có trong `output/raw`, bỏ qua các page đã lưu. |
-| `--continue-on-error` | Nếu một loại hóa đơn lỗi, vẫn ghi workbook cho các loại thành công và lưu lỗi vào metadata. |
-| `--profile-dir` | Thư mục lưu profile CloakBrowser để tái sử dụng session. |
-| `--output-dir` | Thư mục chứa Excel, metadata và raw JSON. |
-| `--output-name` | Tên file Excel tùy chỉnh. Nếu bỏ qua sẽ tự sinh theo khoảng ngày. |
-| `--headed` | Mở browser có giao diện thay vì headless. |
-| `--login-wait-seconds` | Số giây chờ nút Đăng nhập sẵn sàng. Tăng giá trị này khi cần tick reCAPTCHA thủ công với `--headed`. |
-| `--session-file` | File cache session/bearer token, mặc định `<profile-dir>/fpt_session.json`. |
-| `--reuse-token` | Dùng bearer token cache trước khi mở browser đăng nhập. Đây là mặc định. |
-| `--no-reuse-token` | Bỏ qua token cache và đăng nhập lại bằng browser. |
+| Page tải đồng thời | 5 |
+| Số hóa đơn/request | 5.000 |
+| Retry mỗi request | 3 lần, chờ 2 giây/lần |
+| Số lần thử mỗi khoảng ngày | Tối đa 3 lần, gồm lần đầu |
+| Resume | Bật |
+| Tự giảm workers/page-size khi lỗi | Tắt |
 
-## Commands
+Muốn chỉ định rõ các tham số:
 
-| Command | Mục đích |
-| --- | --- |
-| `init` | Tạo `.env` mẫu và thư mục runtime. |
-| `doctor` | Kiểm tra Python, dependency, credential, quyền ghi thư mục và session cache. |
-| `login --headed` | Đăng nhập portal, xử lý reCAPTCHA thủ công nếu có, lưu session cache. |
-| `types` | In danh sách loại hóa đơn đọc từ session cache. |
-| `export` | Export hóa đơn ra Excel. |
+```bash
+fpt-einvoice-exporter export-year --year 2023 \
+  --workers 5 --page-size 5000 \
+  --max-retries 3 --retry-delay 2 --range-retries 3 \
+  --no-adaptive-page-size --resume
+```
 
-Giá trị `--types`:
+**Sau Ctrl+C hoặc lỗi API:** chạy lại cùng lệnh, giữ nguyên thư mục output, loại hóa đơn và page-size. Giữ các file raw/checkpoint để tool tiếp tục từ những page đã lưu.
 
-- `all-known`: query các loại đã biết và loại xuất hiện trong session tài khoản.
-- `session`: chỉ query các loại hóa đơn xuất hiện trong session tài khoản.
-- CSV thủ công: ví dụ `01GTKT,03XKNB,01/MTT`.
+## 4. Gom Excel theo năm
 
-## Output
+```bash
+fpt-einvoice-exporter merge-year --year 2022
+fpt-einvoice-exporter merge-year --year 2023
+```
 
-Với `--output-dir ./output/demo`, script tạo:
+Kết quả: `output/fpt_einvoice_2023_all_months.xlsx`, mỗi tháng một sheet tên `2023-01` … `2023-12`. Tool ưu tiên đọc raw JSONL để gom nhanh; nếu không có raw thì đọc sheet `invoices_all` trong Excel tháng.
+
+Thiếu tháng sẽ báo lỗi. Dùng `--skip-missing` nếu chỉ muốn gom các tháng đã có:
+
+```bash
+fpt-einvoice-exporter merge-year --year 2023 --skip-missing
+```
+
+## File kết quả nằm ở đâu?
 
 ```text
-output/demo/
-├── metadata.json
-├── raw/
-│   ├── 01GTKT.jsonl
-│   └── 01_MTT.jsonl
-└── fpt_einvoice_2026-05-01_to_2026-05-12.xlsx
+output/
+├── 2023-02/
+│   ├── parts/                     # Checkpoint của 3 khoảng ngày
+│   │   ├── 01_10/
+│   │   ├── 11_20/
+│   │   └── 21_END/
+│   ├── raw/                       # JSONL đã gom theo tháng
+│   ├── metadata.json
+│   └── fpt_einvoice_2023-02.xlsx
+└── fpt_einvoice_2023_all_months.xlsx
 ```
 
-Workbook Excel gồm:
+Excel tháng có 3 sheet: `metadata` (thông tin lần chạy), `summary` (số lượng theo loại), `invoices_all` (dữ liệu hóa đơn). Excel năm chỉ chứa các sheet tháng. Mỗi sheet tối đa 1.048.575 dòng dữ liệu, cộng một dòng header.
 
-- `metadata`: thông tin lần chạy, khoảng ngày, loại hóa đơn, số dòng.
-- `summary`: tổng số dòng theo từng loại hóa đơn.
-- `invoices_all`: tất cả hóa đơn theo schema UI hiện hành.
-
-Khi chạy thành công, CLI in JSON kết quả ra stdout, gồm đường dẫn file Excel, thư mục output, `metadata.json`, số dòng theo loại và tổng số dòng.
-
-Nếu chạy với `--continue-on-error`, kết quả và `metadata.json` có thêm `errors` theo mã loại hóa đơn. Khi có lỗi bị bỏ qua, trường `ok` là `false` để báo đây là file xuất một phần.
-
-Nếu export bị dừng bằng `Ctrl+C`, CLI không xóa raw JSON đã checkpoint. Chạy lại cùng tham số và thêm `--resume` để tiếp tục từ page đã lưu. Nếu kết quả có `warnings`, xem workbook đó là output một phần cho tới khi chạy lại thành công không còn lỗi.
-
-## Cách hoạt động
-
-Script không bấm nút “Tải về” trên portal. Flow hiện tại:
-
-1. Mở portal bằng CloakBrowser với profile chỉ định.
-2. Nếu profile chưa có session, tự điền MST, tài khoản, mật khẩu và đăng nhập.
-3. Đọc `sessionStorage.session` để lấy bearer token.
-4. Gọi API `/api/sea` theo từng loại hóa đơn và từng page.
-5. Lưu raw JSON sau mỗi page thành công để có thể resume.
-6. Chuẩn hóa dữ liệu và ghi workbook Excel bằng `openpyxl`.
-
-Cách này ổn định hơn cho batch lớn và dễ mở rộng để chạy cron hoặc pipeline nội bộ.
-
-Mặc định CLI lưu session/token vào `<profile-dir>/fpt_session.json` sau lần đăng nhập thành công. Các lần chạy sau sẽ đọc token cache trước và gọi API luôn, tránh mở lại browser/reCAPTCHA. Nếu API trả `401/403` khi dùng token cache, CLI sẽ xóa cache và yêu cầu chạy lại để đăng nhập mới. Nếu muốn ép đăng nhập lại, chạy với `--no-reuse-token` hoặc xóa file session cache.
-
-Khi export lớn bị gián đoạn, chạy lại cùng `--output-dir`, `--types`, khoảng ngày và thêm `--resume`. CLI dùng manifest và page file nguyên tử trong `output/raw/*.jsonl.pages/`, không suy offset chỉ từ số dòng.
-
-Khi API FPT trả gateway error `502/504`, CLI tự giảm page size rồi gọi lại cùng `start`. Ví dụ từ mặc định `2000` có thể giảm xuống `500`, `100`, rồi `10` nếu cần. Cơ chế này giúp export dữ liệu lớn ổn định hơn mà user không phải tự đổi tham số sau mỗi lỗi.
-
-## Export production theo năm
-
-Luồng production chia mỗi tháng thành `01-10`, `11-20`, `21-ngày cuối`, dùng
-JSONL/page manifest để resume an toàn và chỉ tạo một workbook cuối cho tháng:
+## Tải riêng một khoảng ngày
 
 ```bash
-python3 fpt_einvoice_exporter.py export-year --year 2023 --workers 5 \
-  --page-size 5000 --range-days 10 --max-retries 3 --retry-delay 2 \
-  --range-retries 3 --no-adaptive-page-size --resume
+fpt-einvoice-exporter export \
+  --from-date 2023-02-01 --to-date 2023-02-10 \
+  --output-dir output/custom-2023-02-01_10 \
+  --workers 5 --page-size 5000 --no-adaptive-page-size --resume
 ```
 
-Có thể dùng wrapper `./scripts/export_year.sh 2023`. Mỗi month nằm trong
-`output/YYYY-MM/`; page hoàn tất nằm trong `parts/<range>/raw/*.jsonl.pages/`,
-raw tháng trong `raw/*.jsonl`, và Excel tháng chỉ có `metadata`, `summary`,
-`invoices_all`. Production không sort/autosize và không giữ toàn bộ invoice trong RAM.
+Lệnh `export` dùng nguyên khoảng ngày được nhập; với dữ liệu lớn, nên chọn khoảng ngắn. `export-year` tự chia tháng và dùng luồng ghi Excel streaming.
 
-Gom workbook năm (ưu tiên raw JSONL, fallback Excel tháng):
+Mặc định `--types all-known` hỗ trợ `01GTKT`, `03XKNB`, `01/MTT`, `06HDTM`. Để chọn loại cụ thể, thêm `--types '01GTKT,01/MTT'`.
+
+## Tra cứu và phát triển
 
 ```bash
-python3 fpt_einvoice_exporter.py merge-year --year 2023
+fpt-einvoice-exporter export-year --help
+fpt-einvoice-exporter merge-year --help
+python -m unittest discover -v
 ```
 
-Mặc định thiếu một tháng là lỗi; thêm `--skip-missing` để bỏ qua. Tháng rỗng vẫn
-có sheet và header. `FPT_EINVOICE_TOKEN` trong `.env` luôn được ưu tiên và không
-bao giờ được ghi ra log.
+Cũng có thể thay `fpt-einvoice-exporter` bằng `python fpt_einvoice_exporter.py`. Schema và chuyển đổi dữ liệu nằm trong `UI_EXPORT_COLUMNS` (`constants.py`) và `build_ui_export_row()` (`export.py`).
 
-## Phát triển
-
-Chạy test:
-
-```bash
-. .venv/bin/activate
-python -B -m unittest
-```
-
-Test hiện tập trung vào:
-
-- Đọc `.env` và resolve credential.
-- Thứ tự cột, format giá trị và sort trong workbook Excel.
-- Package structure, console script và wrapper CLI tương thích lệnh cũ.
-
-## Bảo mật dữ liệu
-
-- Không commit `.env`, profile browser, raw JSON, Excel export hoặc dữ liệu hóa đơn thật.
-- Không commit file session/token cache như `fpt_session.json`.
-- Dùng `--profile-dir` riêng cho từng môi trường/tài khoản nếu cần tách session.
-- Khi chia sẻ log lỗi, kiểm tra và xóa MST, username, token, thông tin khách hàng hoặc số hóa đơn nhạy cảm.
+**Bảo mật:** giữ `.env`, session/token, log và dữ liệu hóa đơn trên máy; không commit hoặc chia sẻ chúng. File `.env.example` chỉ chứa giá trị mẫu.
