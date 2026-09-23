@@ -43,7 +43,7 @@ def parse_env_file(path: Path) -> dict[str, str]:
             continue
         key, value = line.split("=", 1)
         key = key.strip()
-        if key not in LOGIN_ENV_MAP.values():
+        if key not in {*LOGIN_ENV_MAP.values(), "FPT_EINVOICE_TOKEN"}:
             continue
         value = strip_inline_comment(value)
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
@@ -58,7 +58,7 @@ def load_login_env(env_file: str | None) -> dict[str, str]:
     if env_file:
         values.update(parse_env_file(Path(env_file).expanduser()))
 
-    for env_key in LOGIN_ENV_MAP.values():
+    for env_key in (*LOGIN_ENV_MAP.values(), "FPT_EINVOICE_TOKEN"):
         env_value = os.getenv(env_key)
         if env_value:
             values[env_key] = env_value
@@ -66,11 +66,17 @@ def load_login_env(env_file: str | None) -> dict[str, str]:
     return values
 
 
-def resolve_login_inputs(args: Any, env_values: dict[str, str]) -> dict[str, str]:
+def resolve_login_inputs(
+    args: Any,
+    env_values: dict[str, str],
+    require_password: bool = True,
+) -> dict[str, str]:
     resolved: dict[str, str] = {}
     missing: list[str] = []
 
     for arg_name, env_key in LOGIN_ENV_MAP.items():
+        if arg_name == "password" and not require_password:
+            continue
         cli_value = getattr(args, arg_name, None)
         raw_value = cli_value if cli_value not in (None, "") else env_values.get(env_key)
         if raw_value is None:

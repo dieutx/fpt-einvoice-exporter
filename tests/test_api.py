@@ -119,7 +119,10 @@ class ApiFetchTests(unittest.TestCase):
                     raw_path=raw_path,
                 )
 
-            self.assertEqual(raw_path.read_text(encoding="utf-8"), '[\n  {\n    "inc": 1\n  }\n]')
+            self.assertEqual(
+                raw_path.read_text(encoding="utf-8"),
+                '{"inc":1}\n',
+            )
 
     def test_fetch_invoices_reduces_page_size_after_gateway_errors(self):
         client = FakeClient(

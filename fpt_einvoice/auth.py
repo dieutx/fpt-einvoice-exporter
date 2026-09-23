@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cloakbrowser import launch_persistent_context
 
 from .constants import BASE_URL
 from .log import eprint
@@ -91,6 +90,10 @@ def portal_login(
     headless: bool,
     login_wait_seconds: int = 35,
 ) -> dict[str, Any]:
+    # Chỉ import CloakBrowser khi thực sự cần browser login.
+    # Khi dùng FPT_EINVOICE_TOKEN thì đoạn này không bao giờ chạy.
+    from cloakbrowser import launch_persistent_context
+
     profile_dir.mkdir(parents=True, exist_ok=True)
     context = launch_persistent_context(
         profile_dir,

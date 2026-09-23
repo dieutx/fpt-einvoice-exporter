@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from .api import build_client, fetch_invoices, resolve_types
+from .api import build_client, checkpoint_info, fetch_invoices, resolve_types
 from .auth import delete_session_cache, portal_login, read_session_cache, write_session_cache
 from .config import load_login_env, resolve_login_inputs
 from .constants import KNOWN_TYPE_LABELS
@@ -87,6 +87,7 @@ def validate_export_args(args: Any, fd: str, td: str) -> None:
     max_retries = int(getattr(args, "max_retries", 3))
     retry_delay = float(getattr(args, "retry_delay", 2.0))
     login_wait_seconds = int(getattr(args, "login_wait_seconds", 35))
+    workers = int(getattr(args, "workers", 4))
 
     if page_size <= 0:
         raise ValueError("--page-size phải lớn hơn 0")
@@ -100,6 +101,8 @@ def validate_export_args(args: Any, fd: str, td: str) -> None:
         raise ValueError("--retry-delay không được âm")
     if login_wait_seconds <= 0:
         raise ValueError("--login-wait-seconds phải lớn hơn 0")
+    if workers <= 0:
+        raise ValueError("--workers phải lớn hơn 0")
 
 
 def run_init(args: Any) -> dict[str, Any]:
@@ -167,7 +170,13 @@ def run_doctor(args: Any) -> dict[str, Any]:
     )
 
     try:
-        resolve_login_inputs(args, load_login_env(args.env_file))
+        env_values = load_login_env(args.env_file)
+        direct_token = str(env_values.get("FPT_EINVOICE_TOKEN", "")).strip()
+        resolve_login_inputs(
+            args,
+            env_values,
+            require_password=not bool(direct_token),
+        )
         credentials_ok = True
     except ValueError:
         credentials_ok = False
@@ -247,7 +256,14 @@ def run_types(args: Any) -> dict[str, Any]:
 
 
 def run_export(args: Any) -> dict[str, Any]:
-    login_values = resolve_login_inputs(args, load_login_env(args.env_file))
+    env_values = load_login_env(args.env_file)
+    direct_token = str(env_values.get("FPT_EINVOICE_TOKEN", "")).strip()
+
+    login_values = resolve_login_inputs(
+        args,
+        env_values,
+        require_password=not bool(direct_token),
+    )
 
     fd = parse_date(args.from_date, end_of_day=False)
     td = parse_date(args.to_date, end_of_day=True)
@@ -262,29 +278,45 @@ def run_export(args: Any) -> dict[str, Any]:
     context = None
     session = None
     used_cached_session = False
-    if args.reuse_token:
-        session = read_session_cache(session_file, login_values["mst"], login_values["username"])
-        if session:
-            used_cached_session = True
-            eprint(f"[login] Dùng bearer token cache: {session_file}")
 
-    if session:
-        token = session["token"]
+    # Ưu tiên token được cung cấp trực tiếp trong .env.
+    # Có token => không mở browser/CloakBrowser.
+    if direct_token:
+        token = direct_token
+        session = {
+            "token": direct_token,
+            "uid": f'{login_values["mst"]}.{login_values["username"]}',
+            "itype": "",
+        }
+        eprint("[login] Dùng FPT_EINVOICE_TOKEN từ .env; bỏ qua CloakBrowser")
     else:
-        login = portal_login(
-            mst=login_values["mst"],
-            username=login_values["username"],
-            password=login_values["password"],
-            profile_dir=profile_dir,
-            headless=not args.headed,
-            login_wait_seconds=args.login_wait_seconds,
-        )
-        context = login["context"]
-        session = login["session"]
-        token = login["token"]
         if args.reuse_token:
-            write_session_cache(session_file, session)
-            eprint(f"[login] Đã lưu bearer token cache: {session_file}")
+            session = read_session_cache(
+                session_file,
+                login_values["mst"],
+                login_values["username"],
+            )
+            if session:
+                used_cached_session = True
+                eprint(f"[login] Dùng bearer token cache: {session_file}")
+
+        if session:
+            token = session["token"]
+        else:
+            login = portal_login(
+                mst=login_values["mst"],
+                username=login_values["username"],
+                password=login_values["password"],
+                profile_dir=profile_dir,
+                headless=not args.headed,
+                login_wait_seconds=args.login_wait_seconds,
+            )
+            context = login["context"]
+            session = login["session"]
+            token = login["token"]
+            if args.reuse_token:
+                write_session_cache(session_file, session)
+                eprint(f"[login] Đã lưu bearer token cache: {session_file}")
 
     try:
         requested_types = resolve_types(args.types, session)
@@ -292,12 +324,17 @@ def run_export(args: Any) -> dict[str, Any]:
 
         all_rows: list[dict[str, Any]] = []
         by_type: dict[str, list[dict[str, Any]]] = {}
+        raw_counts: dict[str, int] = {}
         errors: dict[str, dict[str, str]] = {}
+
+        worker_count = max(1, int(getattr(args, "workers", 4)))
+        raw_only = bool(getattr(args, "raw_only", False))
+        eprint(f"[workers] parallel pages={worker_count}")
 
         client = build_client(token)
         try:
             for type_code in requested_types:
-                raw_path = raw_dir / f"{type_code.replace('/', '_')}.json"
+                raw_path = raw_dir / f"{type_code.replace('/', '_')}.jsonl"
                 try:
                     rows = fetch_invoices(
                         client,
@@ -312,8 +349,9 @@ def run_export(args: Any) -> dict[str, Any]:
                         resume=getattr(args, "resume", False),
                         adaptive_page_size=getattr(args, "adaptive_page_size", True),
                         min_page_size=getattr(args, "min_page_size", 10),
+                        workers=worker_count,
+                        accumulate=not raw_only,
                     )
-                    write_json(raw_path, rows)
                 except httpx.HTTPStatusError as exc:
                     if used_cached_session and exc.response.status_code in (401, 403):
                         delete_session_cache(session_file)
@@ -338,10 +376,17 @@ def run_export(args: Any) -> dict[str, Any]:
                     }
                     eprint(f"[error] {type_code}: {exc}")
                     continue
-                label = KNOWN_TYPE_LABELS.get(type_code, type_code)
-                flat_rows = [flatten_invoice(row, label) for row in rows]
-                by_type[type_code] = flat_rows
-                all_rows.extend(flat_rows)
+
+                if raw_only:
+                    count = int(checkpoint_info(raw_path).get("rows", 0))
+                    raw_counts[type_code] = count
+                    eprint(f"[done] {type_code} rows={count}")
+                else:
+                    label = KNOWN_TYPE_LABELS.get(type_code, type_code)
+                    flat_rows = [flatten_invoice(row, label) for row in rows]
+                    by_type[type_code] = flat_rows
+                    all_rows.extend(flat_rows)
+                    eprint(f"[done] {type_code} rows={len(flat_rows)}")
         finally:
             client.close()
 
@@ -358,10 +403,11 @@ def run_export(args: Any) -> dict[str, Any]:
             "from_date": fd,
             "to_date": td,
             "types": requested_types,
-            "counts": {code: len(rows) for code, rows in by_type.items()},
+            "workers": worker_count,
+            "counts": raw_counts if raw_only else {code: len(rows) for code, rows in by_type.items()},
             "errors": errors,
             "warnings": warnings,
-            "total_rows": len(all_rows),
+            "total_rows": sum(raw_counts.values()) if raw_only else sum(len(rows) for rows in by_type.values()),
             "profile_dir": str(profile_dir),
             "session_uid": session.get("uid"),
             "session_fn": session.get("fn"),
@@ -369,7 +415,8 @@ def run_export(args: Any) -> dict[str, Any]:
             "generated_at": datetime.now().astimezone().isoformat(),
         }
         write_json(output_dir / "metadata.json", metadata)
-        export_workbook(output_xlsx, all_rows, by_type, metadata)
+        if not raw_only:
+            export_workbook(output_xlsx, all_rows, by_type, metadata)
 
         return {
             "ok": not errors,
@@ -432,6 +479,12 @@ def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> No
         help="Số giây chờ giữa các lần retry API",
     )
     parser.add_argument(
+        "--workers",
+        type=positive_int_arg,
+        default=4,
+        help="Số page API tải song song trong mỗi loại hóa đơn; mặc định 4",
+    )
+    parser.add_argument(
         "--no-adaptive-page-size",
         dest="adaptive_page_size",
         action="store_false",
@@ -443,6 +496,7 @@ def add_export_args(parser: argparse.ArgumentParser, required_dates: bool) -> No
         action="store_true",
         help="Tiếp tục từ raw JSON đã lưu trong output/raw thay vì tải lại các page đã xong",
     )
+    parser.add_argument("--raw-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--continue-on-error",
         action="store_true",
@@ -509,6 +563,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     export_parser = subparsers.add_parser("export", help="Export hóa đơn ra Excel")
     add_export_args(export_parser, required_dates=True)
+    year_parser = subparsers.add_parser("export-year", help="Export 12 tháng, mỗi tháng 3 range")
+    add_export_args(year_parser, required_dates=False)
+    year_parser.set_defaults(page_size=5000, workers=5, adaptive_page_size=False, max_retries=3, retry_delay=2.0, resume=True)
+    year_parser.add_argument("--year", type=positive_int_arg, required=True)
+    year_parser.add_argument("--range-days", type=positive_int_arg, default=10, help="Giữ để tương thích; production dùng boundary 1-10, 11-20, 21-end")
+    year_parser.add_argument("--range-retries", type=positive_int_arg, default=3)
+    merge_parser = subparsers.add_parser("merge-year", help="Gom 12 tháng thành workbook năm")
+    merge_parser.add_argument("--year", type=positive_int_arg, required=True)
+    merge_parser.add_argument("--output-dir", default="./output")
+    merge_parser.add_argument("--skip-missing", action="store_true")
     return parser
 
 
@@ -522,6 +586,14 @@ def run_command(args: Any, parser: argparse.ArgumentParser) -> tuple[dict[str, A
         return run_login(args), 0
     if args.command == "types":
         return run_types(args), 0
+    if args.command == "export-year":
+        from .production import run_export_year
+        if args.range_days != 10:
+            raise ValueError("Hiện production chỉ hỗ trợ --range-days 10 với boundary cố định")
+        return run_export_year(args), 0
+    if args.command == "merge-year":
+        from .production import run_merge_year
+        return run_merge_year(args), 0
 
     if not args.from_date or not args.to_date:
         parser.error("export cần --from-date và --to-date")
@@ -541,7 +613,7 @@ def main() -> int:
             "chạy lại cùng tham số và thêm --resume để tiếp tục."
         )
         return 130
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, FileNotFoundError) as exc:
         parser.error(str(exc))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))

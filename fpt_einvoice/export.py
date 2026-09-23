@@ -1,9 +1,12 @@
 import json
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from .constants import (
     CONVERTED_INV_LABELS,
@@ -15,6 +18,10 @@ from .constants import (
     UI_EXPORT_COLUMNS,
 )
 from .formatting import display_date, display_number, localize_iso, lookup_label
+from .log import eprint
+
+EXCEL_MAX_ROWS = 1_048_576
+EXCEL_MAX_DATA_ROWS = EXCEL_MAX_ROWS - 1
 
 
 def resolve_ou_display(row: dict[str, Any]) -> Any:
@@ -151,9 +158,24 @@ def write_sheet(ws, rows: Iterable[dict[str, Any]], columns: list[str]) -> None:
     ws.append(columns)
     for cell in ws[1]:
         cell.font = Font(bold=True)
+
+    widths = [len(str(column)) for column in columns]
+
     for row in rows:
-        ws.append([row.get(col, "") for col in columns])
-    autosize_columns(ws)
+        values = [row.get(col, "") for col in columns]
+        ws.append(values)
+
+        for index, value in enumerate(values):
+            length = len("" if value is None else str(value))
+            if length > widths[index]:
+                widths[index] = length
+
+    for index, length in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(index)].width = min(
+            max(length + 2, 10),
+            40,
+        )
+
     ws.freeze_panes = "A2"
 
 
@@ -169,45 +191,171 @@ def _sort_invoice_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(rows, key=sort_key, reverse=True)
 
 
+def _iter_checkpoint_rows(path: Path):
+    # Stream invoice objects from JSONL; support legacy JSON array checkpoints.
+    if path.suffix == ".jsonl":
+        with path.open("r", encoding="utf-8") as fh:
+            for line_no, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Raw JSONL không hợp lệ: {path}:{line_no}") from exc
+                if not isinstance(row, dict):
+                    raise ValueError(f"Raw JSONL phải chứa object hóa đơn: {path}:{line_no}")
+                yield row
+        return
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError(f"Raw JSON phải là list hóa đơn: {path}")
+    yield from payload
+
+
+def iter_checkpoint_rows(path: Path):
+    """Public streaming reader for JSONL and legacy JSON array checkpoints."""
+    yield from _iter_checkpoint_rows(path)
+
+
+def _append_write_only_header(ws, values: list[str]) -> None:
+    cells = []
+    for value in values:
+        cell = WriteOnlyCell(ws, value=value)
+        cell.font = Font(bold=True)
+        cells.append(cell)
+    ws.append(cells)
+
+
+def _raw_path_for_type(raw_dir: Path, type_code: str) -> Path | None:
+    safe_code = type_code.replace("/", "_")
+    jsonl = raw_dir / f"{safe_code}.jsonl"
+    if jsonl.exists():
+        return jsonl
+    legacy_json = raw_dir / f"{safe_code}.json"
+    if legacy_json.exists():
+        return legacy_json
+    return None
+
+
 def export_workbook(
     output_xlsx: Path,
     all_rows: list[dict[str, Any]],
     by_type: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any],
 ) -> None:
-    wb = Workbook()
+    # FAST exporter: raw JSONL -> build_ui_export_row -> write_only XLSX.
+    started = time.perf_counter()
+    raw_dir = output_xlsx.parent / "raw"
 
-    ws_meta = wb.active
-    ws_meta.title = "metadata"
-    ws_meta.append(["key", "value"])
-    for cell in ws_meta[1]:
-        cell.font = Font(bold=True)
-    for key, value in metadata.items():
-        ws_meta.append([key, json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value])
-    autosize_columns(ws_meta)
+    requested_types = list(metadata.get("types") or [])
+    counts = dict(metadata.get("counts") or {})
+    total_rows = int(metadata.get("total_rows") or 0)
+
+    raw_paths: list[tuple[str, Path]] = []
+    if raw_dir.exists():
+        for type_code in requested_types:
+            raw_path = _raw_path_for_type(raw_dir, type_code)
+            if raw_path is not None:
+                raw_paths.append((type_code, raw_path))
+        if not requested_types and not raw_paths:
+            for raw_path in sorted(raw_dir.glob("*.jsonl")):
+                type_code = raw_path.stem
+                if type_code == "01_MTT":
+                    type_code = "01/MTT"
+                raw_paths.append((type_code, raw_path))
+
+    use_raw_stream = bool(raw_paths)
+
+    if use_raw_stream:
+        all_rows.clear()
+        by_type.clear()
+
+    wb = Workbook(write_only=True)
+
+    ws_meta = wb.create_sheet("metadata")
     ws_meta.freeze_panes = "A2"
+    _append_write_only_header(ws_meta, ["key", "value"])
+    for key, value in metadata.items():
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        ws_meta.append([key, value])
 
     ws_summary = wb.create_sheet("summary")
-    ws_summary.append(["type_code", "type_label", "count"])
-    for cell in ws_summary[1]:
-        cell.font = Font(bold=True)
-    for code, rows in by_type.items():
-        ws_summary.append([code, KNOWN_TYPE_LABELS.get(code, code), len(rows)])
-    ws_summary.append(["TOTAL", "Tất cả", len(all_rows)])
-    autosize_columns(ws_summary)
     ws_summary.freeze_panes = "A2"
+    _append_write_only_header(ws_summary, ["type_code", "type_label", "count"])
+    if requested_types:
+        for code in requested_types:
+            ws_summary.append([code, KNOWN_TYPE_LABELS.get(code, code), counts.get(code, 0)])
+    else:
+        for code, count in counts.items():
+            ws_summary.append([code, KNOWN_TYPE_LABELS.get(code, code), count])
+    ws_summary.append(["TOTAL", "Tất cả", total_rows])
 
-    ui_headers = [header for _, header in UI_EXPORT_COLUMNS]
-    sorted_all_rows = _sort_invoice_rows(all_rows)
-    ui_all_rows = [build_ui_export_row(row) for row in sorted_all_rows]
     ws_all = wb.create_sheet("invoices_all")
-    write_sheet(ws_all, ui_all_rows, ui_headers)
+    ws_all.freeze_panes = "A2"
+    ui_headers = [header for _, header in UI_EXPORT_COLUMNS]
+    _append_write_only_header(ws_all, ui_headers)
 
-    for code, rows in by_type.items():
-        ws = wb.create_sheet(sheet_name_for_type(code, KNOWN_TYPE_LABELS.get(code, code)))
-        sorted_type_rows = _sort_invoice_rows(rows)
-        ui_rows = [build_ui_export_row(row) for row in sorted_type_rows]
-        write_sheet(ws, ui_rows, ui_headers)
+    written = 0
+
+    if use_raw_stream:
+        eprint(f"[excel] FAST write_only raw={raw_dir} expected_rows={total_rows}")
+        for type_code, raw_path in raw_paths:
+            file_rows = 0
+            file_started = time.perf_counter()
+            eprint(f"[excel] read {type_code} <- {raw_path.name}")
+            for raw_row in _iter_checkpoint_rows(raw_path):
+                ui_row = build_ui_export_row(raw_row)
+                ws_all.append([ui_row.get(header, "") for header in ui_headers])
+                written += 1
+                file_rows += 1
+                if written % 10000 == 0:
+                    elapsed = time.perf_counter() - started
+                    rate = written / elapsed if elapsed else 0
+                    eprint(f"[excel] rows={written:,} elapsed={elapsed:.1f}s rate={rate:,.0f} rows/s")
+            eprint(f"[excel] done {type_code} rows={file_rows:,} time={time.perf_counter() - file_started:.1f}s")
+    else:
+        # Fallback giữ tương thích unit test/direct call.
+        sorted_all_rows = _sort_invoice_rows(all_rows)
+        for row in sorted_all_rows:
+            ui_row = build_ui_export_row(row)
+            ws_all.append([ui_row.get(header, "") for header in ui_headers])
+            written += 1
 
     output_xlsx.parent.mkdir(parents=True, exist_ok=True)
+    before_save = time.perf_counter()
+    eprint(f"[excel] stream-done rows={written:,} time={before_save - started:.1f}s")
     wb.save(output_xlsx)
+    ended = time.perf_counter()
+    eprint(f"[excel] saved rows={written:,} save={ended - before_save:.1f}s total={ended - started:.1f}s file={output_xlsx}")
+
+
+def export_raw_workbook(output_xlsx: Path, raw_paths: list[tuple[str, Path]], metadata: dict[str, Any],
+                        progress_every: int = 10_000) -> int:
+    """Production exporter: JSONL -> authoritative UI mapping -> write-only XLSX."""
+    total = int(metadata.get("total_rows", 0))
+    if total > EXCEL_MAX_DATA_ROWS:
+        raise ValueError(f"Excel row limit exceeded: {total} data rows > {EXCEL_MAX_DATA_ROWS}")
+    started = time.perf_counter(); wb = Workbook(write_only=True)
+    meta = wb.create_sheet("metadata"); _append_write_only_header(meta, ["key", "value"])
+    for key, value in metadata.items():
+        meta.append([key, json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value])
+    summary = wb.create_sheet("summary"); _append_write_only_header(summary, ["type_code", "type_label", "count"])
+    counts = metadata.get("counts", {})
+    for code in metadata.get("types", list(counts)):
+        summary.append([code, KNOWN_TYPE_LABELS.get(code, code), counts.get(code, 0)])
+    summary.append(["TOTAL", "Tất cả", total])
+    sheet = wb.create_sheet("invoices_all"); headers = [h for _, h in UI_EXPORT_COLUMNS]; _append_write_only_header(sheet, headers)
+    written = 0
+    for _, path in raw_paths:
+        for raw in _iter_checkpoint_rows(path):
+            if written >= EXCEL_MAX_DATA_ROWS: raise ValueError("Excel row limit exceeded while streaming")
+            row = build_ui_export_row(raw); sheet.append([row.get(h, "") for h in headers]); written += 1
+            if progress_every and written % progress_every == 0:
+                elapsed = time.perf_counter() - started; eprint(f"[excel] rows={written:,} rate={written / elapsed:,.0f} rows/s")
+    if written != total: raise ValueError(f"Raw row count mismatch: metadata={total}, actual={written}")
+    output_xlsx.parent.mkdir(parents=True, exist_ok=True); wb.save(output_xlsx)
+    eprint(f"[excel] saved rows={written:,} time={time.perf_counter() - started:.1f}s file={output_xlsx}")
+    return written

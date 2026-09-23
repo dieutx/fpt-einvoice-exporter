@@ -179,8 +179,8 @@ Với `--output-dir ./output/demo`, script tạo:
 output/demo/
 ├── metadata.json
 ├── raw/
-│   ├── 01GTKT.json
-│   └── 01_MTT.json
+│   ├── 01GTKT.jsonl
+│   └── 01_MTT.jsonl
 └── fpt_einvoice_2026-05-01_to_2026-05-12.xlsx
 ```
 
@@ -188,8 +188,7 @@ Workbook Excel gồm:
 
 - `metadata`: thông tin lần chạy, khoảng ngày, loại hóa đơn, số dòng.
 - `summary`: tổng số dòng theo từng loại hóa đơn.
-- `invoices_all`: tất cả hóa đơn, sort theo ngày hóa đơn rồi ID giảm dần.
-- Sheet riêng cho từng loại hóa đơn.
+- `invoices_all`: tất cả hóa đơn theo schema UI hiện hành.
 
 Khi chạy thành công, CLI in JSON kết quả ra stdout, gồm đường dẫn file Excel, thư mục output, `metadata.json`, số dòng theo loại và tổng số dòng.
 
@@ -212,9 +211,35 @@ Cách này ổn định hơn cho batch lớn và dễ mở rộng để chạy c
 
 Mặc định CLI lưu session/token vào `<profile-dir>/fpt_session.json` sau lần đăng nhập thành công. Các lần chạy sau sẽ đọc token cache trước và gọi API luôn, tránh mở lại browser/reCAPTCHA. Nếu API trả `401/403` khi dùng token cache, CLI sẽ xóa cache và yêu cầu chạy lại để đăng nhập mới. Nếu muốn ép đăng nhập lại, chạy với `--no-reuse-token` hoặc xóa file session cache.
 
-Khi export lớn bị gián đoạn, chạy lại cùng `--output-dir`, `--types`, khoảng ngày và thêm `--resume`. CLI sẽ đọc các file `output/raw/*.json` đã có, bắt đầu page tiếp theo từ số dòng đã lưu và tiếp tục checkpoint sau mỗi page.
+Khi export lớn bị gián đoạn, chạy lại cùng `--output-dir`, `--types`, khoảng ngày và thêm `--resume`. CLI dùng manifest và page file nguyên tử trong `output/raw/*.jsonl.pages/`, không suy offset chỉ từ số dòng.
 
 Khi API FPT trả gateway error `502/504`, CLI tự giảm page size rồi gọi lại cùng `start`. Ví dụ từ mặc định `2000` có thể giảm xuống `500`, `100`, rồi `10` nếu cần. Cơ chế này giúp export dữ liệu lớn ổn định hơn mà user không phải tự đổi tham số sau mỗi lỗi.
+
+## Export production theo năm
+
+Luồng production chia mỗi tháng thành `01-10`, `11-20`, `21-ngày cuối`, dùng
+JSONL/page manifest để resume an toàn và chỉ tạo một workbook cuối cho tháng:
+
+```bash
+python3 fpt_einvoice_exporter.py export-year --year 2023 --workers 5 \
+  --page-size 5000 --range-days 10 --max-retries 3 --retry-delay 2 \
+  --range-retries 3 --no-adaptive-page-size --resume
+```
+
+Có thể dùng wrapper `./scripts/export_year.sh 2023`. Mỗi month nằm trong
+`output/YYYY-MM/`; page hoàn tất nằm trong `parts/<range>/raw/*.jsonl.pages/`,
+raw tháng trong `raw/*.jsonl`, và Excel tháng chỉ có `metadata`, `summary`,
+`invoices_all`. Production không sort/autosize và không giữ toàn bộ invoice trong RAM.
+
+Gom workbook năm (ưu tiên raw JSONL, fallback Excel tháng):
+
+```bash
+python3 fpt_einvoice_exporter.py merge-year --year 2023
+```
+
+Mặc định thiếu một tháng là lỗi; thêm `--skip-missing` để bỏ qua. Tháng rỗng vẫn
+có sheet và header. `FPT_EINVOICE_TOKEN` trong `.env` luôn được ưu tiên và không
+bao giờ được ghi ra log.
 
 ## Phát triển
 
