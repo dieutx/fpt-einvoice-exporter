@@ -1,6 +1,7 @@
 # FPT eInvoice Exporter
 
 Tải hóa đơn từ FPT eInvoice và xuất Excel theo tháng hoặc năm, giữ định dạng cột và cách chuyển đổi dữ liệu của giao diện FPT.
+<img width="1930" height="915" alt="image" src="https://github.com/user-attachments/assets/dd84ff8c-887e-4111-bb66-622eb525f102" />
 
 ## 1. Cài đặt
 
